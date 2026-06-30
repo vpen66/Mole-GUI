@@ -1,0 +1,55 @@
+name: "Build and Release"
+
+on:
+  push:
+    tags:
+      - 'v*' # 当推送形如 v1.0.0 的 tag 时触发
+  workflow_dispatch: # 支持手动触发构建
+
+jobs:
+  release:
+    permissions:
+      contents: write # 必须赋予写入权限，以便创建 Release 并上传资源
+    runs-on: macos-latest # macOS 应用必须在 macOS 环境中构建
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        # pnpm/action-setup 会自动读取根目录下 package.json 中的 packageManager 字段并安装对应版本
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin # 支持构建 aarch64 和 x86_64 两个架构
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          # 缓存 tauri-gui 目录下的 target 编译输出，加速下一次构建
+          workspaces: "./tauri-gui -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and Publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # 显式指定 Tauri 配置文件的位置，因为配置文件在子目录中
+          configPath: "tauri-gui/tauri.conf.json"
+          # v__VERSION__ 会被自动替换为 tauri.conf.json 中的版本号，例如 v1.0.0
+          tagName: v__VERSION__
+          releaseName: "Mole v__VERSION__"
+          releaseBody: "Mole GUI macOS Desktop App release. Download the DMG or APP package below."
+          releaseDraft: true # 创建为一个草稿 Release，您可以确认后再手动点击发布
+          prerelease: false
