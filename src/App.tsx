@@ -9,6 +9,7 @@ import { OptimizePage } from "@/pages/OptimizePage";
 import { AnalyzePage } from "@/pages/AnalyzePage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { WhitelistPage } from "@/pages/WhitelistPage";
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route path="/purge" element={<PurgePage />} />
           <Route path="/optimize" element={<OptimizePage />} />
           <Route path="/analyze" element={<AnalyzePage />} />
+          <Route path="/whitelist" element={<WhitelistPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           </Route>

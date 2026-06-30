@@ -1858,3 +1858,212 @@ fn parse_path_and_size(line: &str) -> (String, u64) {
         (line.trim().to_string(), 0)
     }
 }
+
+/// 获取指定模式（"clean" 或 "optimize"）下的用户自定义白名单配置。
+///
+/// 参数：mode — 模式名称，可选值为 "clean"（清理白名单）或 "optimize"（优化忽略项）
+/// 返回：Result<Vec<String>, String> — 成功时返回包含规则列表的 Vec，失败时返回错误描述字符串。
+///   Result 是 Rust 中处理错误的核心类型，相当于 Java 的抛出受检异常（checked exception）。
+///   Vec<String> 相当于 Java 里的 ArrayList<String>。
+#[tauri::command]
+pub async fn get_whitelist_config(mode: String) -> Result<Vec<String>, String> {
+    // 获取用户 HOME 环境变量，相当于 Java 里的 System.getenv("HOME")
+    // std::env::var 返回的是一个 Result，因此用 map_err 将可能发生的 VarError 转换为 String，
+    // 然后用 ? 语法糖快速解包。如果是 Err，函数会提前返回错误（相当于 Java 的 throw new Exception()）
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .map_err(|e| format!("无法获取 HOME 目录环境变量: {}", e))?;
+    
+    // 根据模式确定对应文件名，相当于 Java 的 if-else 条件赋值
+    let file_name = if mode == "optimize" {
+        "whitelist_optimize"
+    } else {
+        "whitelist"
+    };
+    
+    // 拼接完整的文件路径
+    let path = home.join(".config").join("mole").join(file_name);
+    
+    // 检查文件是否存在，如果不存在则返回一个空向量（相当于 Java 中的 new ArrayList<>()）
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    // 读取文件内容为完整的 UTF-8 字符串
+    // std::fs::read_to_string 类似于 Java 的 Files.readString(path)
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取白名单文件失败: {}", e))?;
+    
+    let mut patterns = Vec::new();
+    // 遍历文件的每一行并过滤掉空行和注释行
+    // content.lines() 返回行的迭代器，相当于 Java 的 BufferedReader.lines()
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // 忽略空行和以 '#' 开头的注释行
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // to_string() 将只读引用 &str 转换为具有所有权的 String，类似于 Java 的 new String(line)
+        patterns.push(trimmed.to_string());
+    }
+    
+    // Ok() 包裹成功返回的数据，代表 Rust 中的成功流
+    Ok(patterns)
+}
+
+/// 保存白名单配置到配置文件中。
+///
+/// 参数：
+///   mode     — 模式名称（"clean" 或 "optimize"）
+///   patterns — 要保存的白名单规则列表
+/// 返回：
+///   Result<(), String> — 成功返回 Ok(())，相当于 Java 中的 void 方法；失败时返回 Err。
+#[tauri::command]
+pub async fn save_whitelist_config(mode: String, patterns: Vec<String>) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .map_err(|e| format!("无法获取 HOME 目录环境变量: {}", e))?;
+    
+    // 获取对应的文件名和文件头注释说明
+    let (file_name, header) = if mode == "optimize" {
+        ("whitelist_optimize", "# Mole 优化白名单 - 在执行系统优化时，以下列出的任务将被跳过\n# 每行填写一个任务名称（如 system_maintenance）")
+    } else {
+        ("whitelist", "# Mole 清理白名单 - 被匹配到的路径在清理时不会被删除\n# 支持使用 ~ 代表用户主目录，支持 * 通配符，每行填写一个模式")
+    };
+    
+    // 确保父级配置目录存在（`~/.config/mole`），相当于 Java 中的 file.getParentFile().mkdirs()
+    let config_dir = home.join(".config").join("mole");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("创建配置文件夹失败: {}", e))?;
+        
+    let path = config_dir.join(file_name);
+    
+    // 构建文件内容，以自定义的头部注释开始
+    let mut content = header.to_string();
+    content.push_str("\n\n");
+    // 将各项模式添加进内容中
+    for pattern in patterns {
+        let trimmed = pattern.trim();
+        if !trimmed.is_empty() {
+            content.push_str(trimmed);
+            content.push('\n');
+        }
+    }
+    
+    // 将字符串内容写入文件，覆盖原有内容，类似于 Java 的 Files.writeString()
+    std::fs::write(&path, content)
+        .map_err(|e| format!("保存白名单配置失败: {}", e))?;
+        
+    Ok(())
+}
+
+/// 获取清除命令（mo purge）的自定义扫描目录配置。
+///
+/// 返回：Result<Vec<String>, String> — 扫描路径列表。
+#[tauri::command]
+pub async fn get_purge_paths() -> Result<Vec<String>, String> {
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .map_err(|e| format!("无法获取 HOME 目录环境变量: {}", e))?;
+    
+    let path = home.join(".config").join("mole").join("purge_paths");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取项目扫描路径配置失败: {}", e))?;
+    
+    let mut paths = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        paths.push(trimmed.to_string());
+    }
+    
+    Ok(paths)
+}
+
+/// 保存清除命令（mo purge）的自定义扫描目录配置。
+///
+/// 参数：paths — 扫描目录路径列表
+/// 返回：Result<(), String>
+#[tauri::command]
+pub async fn save_purge_paths(paths: Vec<String>) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .map_err(|e| format!("无法获取 HOME 目录环境变量: {}", e))?;
+    
+    let header = "# Mole 项目清理路径 - 自动发现并清理代码构建产物的扫描根目录\n# 可运行: mo purge --paths 进行交互式配置，或者在此处直接修改\n# 每行填写一个文件夹路径（支持以 ~ 开头代表用户家目录）";
+    
+    let config_dir = home.join(".config").join("mole");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("创建配置文件夹失败: {}", e))?;
+        
+    let path = config_dir.join("purge_paths");
+    
+    let mut content = header.to_string();
+    content.push_str("\n\n");
+    for p in paths {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            content.push_str(trimmed);
+            content.push('\n');
+        }
+    }
+    
+    std::fs::write(&path, content)
+        .map_err(|e| format!("保存项目扫描路径失败: {}", e))?;
+        
+    Ok(())
+}
+
+/// 获取当前系统的 Touch ID Sudo 授权状态。
+///
+/// 参数：app — Tauri 应用句柄（在后端获取已配置的 Mole 路径）
+/// 返回：Result<bool, String> — true 表示已配置启用，false 表示未配置（使用普通密码）
+#[tauri::command]
+pub async fn get_touchid_status(app: AppHandle) -> Result<bool, String> {
+    // 运行 `mole touchid status` 命令来查询状态
+    // process::run_mole_capture 是我们项目中封装好的 CLI 调用助手，内置超时保护以防止阻塞
+    let output = process::run_mole_capture(Some(&app), &["touchid", "status"]).await?;
+    
+    // 如果命令行输出包含 "enabled"，说明当前已启用 Touch ID 授权
+    // .contains() 相当于 Java 中的 String.contains()
+    Ok(output.contains("enabled"))
+}
+
+/// 启用或禁用系统 Touch ID Sudo 授权（指纹密码）。
+///
+/// 参数：
+///   app     — Tauri 应用句柄
+///   enabled — true 表示启用，false 表示禁用
+/// 返回：
+///   Result<(), String> — 成功返回 Ok(())，若在 AppleScript 弹出密码确认中取消则返回错误。
+#[tauri::command]
+pub async fn set_touchid_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    // 根据传入的布尔值确定 Mole 子命令动作：enable (启用) 或 disable (禁用)
+    let action = if enabled { "enable" } else { "disable" };
+    
+    // 运行管理员权限特权的进程（需要调用 AppleScript 的 administrator privileges，会弹出系统原生密码确认框）
+    // 参数含义：app句柄，命令数组，超时秒数（30秒），行输出回调闭包（我们不关注中途流式输出，所以传入空闭包 `|_line| {}`）
+    let result = process::run_mole_streaming_with_timeout_sudo(
+        Some(&app),
+        &["touchid", action],
+        30, // 30 秒超时
+        |_line| {} // 忽略每行回调
+    ).await?;
+    
+    // 判断最终执行结果
+    if result.exit_code == 0 && !result.timed_out {
+        // 成功，返回 Ok(())（相当于 Java 中正常返回 void 结束）
+        Ok(())
+    } else if result.timed_out {
+        Err("Sudo 命令执行超时".to_string())
+    } else {
+        Err("配置 Touch ID 授权失败，操作可能被取消或没有管理员权限".to_string())
+    }
+}
+

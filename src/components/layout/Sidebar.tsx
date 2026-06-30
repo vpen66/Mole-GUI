@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   HardDrive,
   Settings2,
+  ShieldAlert,
 } from "lucide-react";
 
 const navItems = [
@@ -18,6 +19,7 @@ const navItems = [
   { to: "/purge", icon: FolderOpen, labelKey: "nav.purge" },
   { to: "/optimize", icon: Zap, labelKey: "nav.optimize" },
   { to: "/analyze", icon: HardDrive, labelKey: "nav.analyze" },
+  { to: "/whitelist", icon: ShieldAlert, labelKey: "nav.whitelist" },
   { to: "/history", icon: History, labelKey: "nav.history" },
   { to: "/settings", icon: Settings2, labelKey: "nav.settings" },
 ];

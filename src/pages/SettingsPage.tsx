@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT, SUPPORTED_LOCALES } from "@/i18n";
-import { Settings2, FolderOpen, RotateCcw, Check, AlertCircle, Languages } from "lucide-react";
+import { Settings2, FolderOpen, RotateCcw, Check, AlertCircle, Languages, Fingerprint } from "lucide-react";
 
 interface MolePathConfig {
   custom_path: string;
@@ -16,6 +16,10 @@ export function SettingsPage() {
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
 
+  const [touchIdEnabled, setTouchIdEnabled] = useState<boolean | null>(null);
+  const [updatingTouchId, setUpdatingTouchId] = useState(false);
+  const [touchIdError, setTouchIdError] = useState("");
+
   const loadConfig = useCallback(async () => {
     try {
       const cfg = await invoke<MolePathConfig>("get_mole_path_config");
@@ -26,9 +30,20 @@ export function SettingsPage() {
     }
   }, []);
 
+  const loadTouchIdStatus = useCallback(async () => {
+    try {
+      const status = await invoke<boolean>("get_touchid_status");
+      setTouchIdEnabled(status);
+    } catch (err) {
+      console.error("Failed to load Touch ID status:", err);
+      setTouchIdEnabled(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadConfig();
-  }, [loadConfig]);
+    loadTouchIdStatus();
+  }, [loadConfig, loadTouchIdStatus]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -66,6 +81,21 @@ export function SettingsPage() {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTouchIdToggle = async () => {
+    setUpdatingTouchId(true);
+    setTouchIdError("");
+    const targetState = !touchIdEnabled;
+    try {
+      await invoke("set_touchid_enabled", { enabled: targetState });
+      setTouchIdEnabled(targetState);
+    } catch (err) {
+      console.error("Failed to toggle Touch ID status:", err);
+      setTouchIdError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingTouchId(false);
     }
   };
 
@@ -179,6 +209,57 @@ export function SettingsPage() {
           </button>
         )}
       </div>
+
+      {/* Touch ID Configuration */}
+      {touchIdEnabled !== null ? (
+        <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Fingerprint size={16} className="text-mole-400" />
+            <h2 className="text-sm font-medium">{t("settings.touchId")}</h2>
+          </div>
+
+          <p className="text-xs text-surface-400">
+            {t("settings.touchIdDesc")}
+          </p>
+
+          <div className="flex items-center justify-between bg-surface-900 border border-surface-750 rounded-lg p-3">
+            <div>
+              <div className="text-xs text-surface-500 mb-1">{t("settings.touchIdStatus")}</div>
+              <div className={`text-sm font-medium ${touchIdEnabled ? "text-green-400" : "text-surface-300"}`}>
+                {touchIdEnabled ? t("settings.touchIdEnabled") : t("settings.touchIdDisabled")}
+              </div>
+            </div>
+            <button
+              onClick={handleTouchIdToggle}
+              disabled={updatingTouchId}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border transition-all duration-200 active:scale-95 ${
+                touchIdEnabled
+                  ? "bg-red-950/20 border-red-900/50 hover:bg-red-950/40 text-red-400"
+                  : "bg-mole-600 border-mole-500 hover:bg-mole-550 text-white"
+              }`}
+            >
+              {updatingTouchId ? t("common.working") : (touchIdEnabled ? t("common.cancel") : t("settings.touchIdToggle"))}
+            </button>
+          </div>
+
+          {touchIdError && (
+            <div className="flex items-center gap-2 text-xs text-red-400 bg-red-950/10 border border-red-900/30 rounded-lg p-2.5">
+              <AlertCircle size={12} className="shrink-0" />
+              <span>{touchIdError}</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-surface-800/50 border border-surface-700/50 rounded-xl p-5 space-y-2 opacity-60">
+          <div className="flex items-center gap-2">
+            <Fingerprint size={16} className="text-surface-500" />
+            <h2 className="text-sm font-medium text-surface-400">{t("settings.touchId")}</h2>
+          </div>
+          <p className="text-xs text-surface-500">
+            {t("settings.touchIdNotSupported")}
+          </p>
+        </div>
+      )}
 
       {/* About section */}
       <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 space-y-3">

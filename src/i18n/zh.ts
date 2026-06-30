@@ -175,6 +175,37 @@ export const zh: Dictionary = {
   "settings.notFound": "未找到",
   "settings.language": "语言",
   "settings.languageDesc": "选择您偏好的显示语言",
+  "settings.touchId": "Touch ID 授权",
+  "settings.touchIdDesc": "允许在执行需要管理员权限的操作时使用 Touch ID 替代密码输入（修改 PAM 配置文件）",
+  "settings.touchIdStatus": "当前状态",
+  "settings.touchIdEnabled": "已启用 Touch ID",
+  "settings.touchIdDisabled": "未启用 Touch ID (使用密码)",
+  "settings.touchIdToggle": "开启 Touch ID 授权",
+  "settings.touchIdEnableSuccess": "成功启用 Touch ID 授权",
+  "settings.touchIdDisableSuccess": "成功禁用 Touch ID 授权",
+  "settings.touchIdNotSupported": "此 Mac 设备不支持 Touch ID，或者生物识别未开启",
+
+  // ── 侧边栏导航 ──
+  "nav.whitelist": "过滤规则",
+
+  // ── 白名单 ──
+  "whitelist.title": "过滤规则与扫描路径",
+  "whitelist.subtitle": "配置在清理或优化时需要保护忽略的路径，以及清除时扫描的目录",
+  "whitelist.tab.clean": "清理白名单",
+  "whitelist.tab.optimize": "优化忽略项",
+  "whitelist.tab.purge": "清除扫描目录",
+  "whitelist.saveSuccess": "白名单保存成功",
+  "whitelist.saveFailed": "白名单保存失败",
+  "whitelist.addCustomPath": "添加自定义路径",
+  "whitelist.customPathPlaceholder": "输入自定义文件夹或文件路径，如 ~/Projects",
+  "whitelist.customPathHelp": "支持使用 ~ 代表用户主目录，支持 * 通配符",
+  "whitelist.add": "添加",
+  "whitelist.customPathsSection": "自定义白名单路径",
+  "whitelist.predefinedSection": "内置常用保护规则 (勾选以保护)",
+  "whitelist.optimizeSection": "系统优化排除任务 (勾选以忽略)",
+  "whitelist.purgeSection": "项目清除扫描路径 (一行一个路径)",
+  "whitelist.purgePathsHelp": "Mole 仅会在以下目录中扫描并清除项目构建产物 (node_modules、target 等)。",
+  "whitelist.purgeSaveSuccess": "扫描路径保存成功",
 
   // ── 确认对话框 ──
   "dialog.spaceToFree": "可释放空间",

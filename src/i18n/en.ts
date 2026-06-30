@@ -175,6 +175,37 @@ export const en: Dictionary = {
   "settings.notFound": "Not found",
   "settings.language": "Language",
   "settings.languageDesc": "Choose your preferred display language",
+  "settings.touchId": "Touch ID Authentication",
+  "settings.touchIdDesc": "Allow using Touch ID instead of entering your password for administrative operations (modifies PAM configuration)",
+  "settings.touchIdStatus": "Current Status",
+  "settings.touchIdEnabled": "Touch ID Enabled",
+  "settings.touchIdDisabled": "Touch ID Disabled (using password)",
+  "settings.touchIdToggle": "Enable Touch ID Authentication",
+  "settings.touchIdEnableSuccess": "Touch ID authentication enabled successfully",
+  "settings.touchIdDisableSuccess": "Touch ID authentication disabled successfully",
+  "settings.touchIdNotSupported": "Touch ID is not supported on this Mac, or biometrics are disabled",
+
+  // ── Sidebar Navigation ──
+  "nav.whitelist": "Filters",
+
+  // ── Whitelist ──
+  "whitelist.title": "Filters & Scan Paths",
+  "whitelist.subtitle": "Configure paths to protect during cleanup, tasks to skip during optimization, and paths to scan during purge",
+  "whitelist.tab.clean": "Clean Whitelist",
+  "whitelist.tab.optimize": "Optimize Ignored",
+  "whitelist.tab.purge": "Purge Scan Paths",
+  "whitelist.saveSuccess": "Whitelist saved successfully",
+  "whitelist.saveFailed": "Failed to save whitelist",
+  "whitelist.addCustomPath": "Add Custom Path",
+  "whitelist.customPathPlaceholder": "Enter custom directory or file path, e.g. ~/Projects",
+  "whitelist.customPathHelp": "Supports ~ for home directory and * as wildcard",
+  "whitelist.add": "Add",
+  "whitelist.customPathsSection": "Custom Whitelist Paths",
+  "whitelist.predefinedSection": "Predefined Rules (Check to protect)",
+  "whitelist.optimizeSection": "System Optimization Ignored Tasks (Check to skip)",
+  "whitelist.purgeSection": "Project Purge Scan Paths (One path per line)",
+  "whitelist.purgePathsHelp": "Mole will only scan and purge project build artifacts (node_modules, target, etc.) in the directories specified below.",
+  "whitelist.purgeSaveSuccess": "Scan paths saved successfully",
 
   // ── ConfirmDialog ──
   "dialog.spaceToFree": "Space to free",

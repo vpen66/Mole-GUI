@@ -54,6 +54,12 @@ pub fn run() {
             get_mole_path_config,    // 获取 Mole CLI 的路径配置
             set_mole_path_config,    // 设置 Mole CLI 的自定义路径
             check_full_disk_access,  // 检查完全磁盘访问权限 (FDA)
+            get_whitelist_config,    // 获取白名单配置
+            save_whitelist_config,   // 保存白名单配置
+            get_purge_paths,         // 获取项目扫描路径
+            save_purge_paths,        // 保存项目扫描路径
+            get_touchid_status,      // 获取 Touch ID 状态
+            set_touchid_enabled,     // 启用/禁用 Touch ID
         ])
         // 应用初始化回调：在应用窗口创建之前执行的设置逻辑
         // |app| 是一个闭包（相当于 Java 的 Lambda 或匿名内部类），app 是 Tauri 应用实例
