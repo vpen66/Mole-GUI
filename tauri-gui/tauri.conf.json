@@ -1,5 +1,5 @@
 {
-  "productName": "Mole",
+  "productName": "MoleGui",
   "version": "1.0.6",
   "identifier": "com.vpen.tauri-gui",
   "build": {
