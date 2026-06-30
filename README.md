@@ -228,4 +228,4 @@ MIT License
 ## 🙏 致谢
 
 - [Tauri](https://tauri.app/) —— 让 Rust + Web 技术构建桌面应用成为可能
-- [Mole CLI](https://github.com/nicholasgasior/mole) —— 核心清理工具
+- [Mole CLI](https://github.com/tw93/Mole) —— 核心清理工具
