@@ -235,12 +235,21 @@ pub struct SystemStatus {
 ///   line       — 要解析和发送的一行文本
 ///
 /// 这个函数是私有的（没有 pub），只在 commands 模块内部使用
-fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
+/// 将 Mole CLI 输出的一行文本解析为相应的事件对象列表。
+///
+/// 参数：
+///   line — 要解析的一行文本（&str 相当于 Java 中的 String，这里是只读引用）
+/// 返回：
+///   Vec<MoleEvent> — 解析出的事件列表（Vec<T> 相当于 Java 中的 ArrayList<T>）
+fn parse_mole_line_to_event(line: &str) -> Vec<MoleEvent> {
+    // Vec::new() 相当于 Java 中的 new ArrayList<>()
+    let mut events = Vec::new();
+
     // 去掉首尾空白
     let trimmed = line.trim();
-    // 忽略空行
+    // 忽略空行，如果是空行直接返回空列表（相当于 Java 的 if (trimmed.isEmpty()) return events;）
     if trimmed.is_empty() {
-        return;
+        return events;
     }
 
     // 首先尝试将这一行解析为 JSON 格式
@@ -252,16 +261,14 @@ fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
         if json.get("type").is_some() {
             let event = MoleEvent {
                 event_type: json
-                    .get("type")                     // 获取 "type" 字段的 JSON 值
+                    .get("type")                     // 获取 "type" 字段 of JSON 值
                     .and_then(|v| v.as_str())         // 尝试将 JSON 值转换为 &str
                     .unwrap_or("unknown")             // 如果失败，使用 "unknown" 作为默认值
                     .to_string(),                     // 转换为拥有所有权的 String
                 data: json,
             };
-            // window.emit 向前端推送事件（类似 Java 的 EventBus.post()）
-            // let _ = 忽略返回值（emit 可能失败，比如窗口已关闭，但我们不需要处理这种情况）
-            let _ = window.emit(event_name, &event);
-            return; // 已处理，提前返回
+            events.push(event); // push 相当于 Java 的 list.add()
+            return events; // 已处理，提前返回
         }
     }
 
@@ -283,8 +290,8 @@ fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
             event_type: "progress".to_string(),
             data: json_obj,
         };
-        let _ = window.emit(event_name, &event);
-        return;
+        events.push(event);
+        return events;
     }
 
     // 跳过其他格式的标题行，但将特定标题（⚙ 开头或包含 "Free space:"）作为进度更新发送
@@ -301,9 +308,9 @@ fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
                 event_type: "progress".to_string(),
                 data: json_obj,
             };
-            let _ = window.emit(event_name, &event);
+            events.push(event);
         }
-        return;
+        return events;
     }
 
     // 解析普通文本输出行（mole CLI 的人类可读格式）
@@ -326,7 +333,7 @@ fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
             event_type: "item".to_string(),
             data: json_obj,
         };
-        let _ = window.emit(event_name, &event);
+        events.push(event);
 
         // 同时发送一个 "progress" 事件（告知前端当前正在处理哪个条目）
         let progress_json = serde_json::json!({
@@ -340,7 +347,26 @@ fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
             event_type: "progress".to_string(),
             data: progress_json,
         };
-        let _ = window.emit(event_name, &progress_event);
+        events.push(progress_event);
+    }
+
+    events
+}
+
+/// 解析 Mole CLI 输出的一行文本，并将其作为 Tauri 事件发送到前端窗口。
+///
+/// 参数：
+///   window     — 目标窗口（事件接收方）
+///   event_name — 事件名称（前端用 listen(event_name, ...) 来订阅）
+///   line       — 要解析和发送的一行文本
+///
+/// 这个函数是私有的（没有 pub），只在 commands 模块内部使用
+fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
+    let events = parse_mole_line_to_event(line);
+    for event in events {
+        // window.emit 向前端推送事件（类似 Java 的 EventBus.post()）
+        // let _ = 忽略返回值（emit 可能失败，比如窗口已关闭，但我们不需要处理这种情况）
+        let _ = window.emit(event_name, &event);
     }
 }
 
@@ -523,15 +549,13 @@ fn parse_optimize_output(output: &str) -> OptimizeResult {
         }
 
         // 解析 "system_health" 对象
-        // .and_then(|h| Some(SystemHealth {...})) 如果 system_health 存在，构建结构体
-        let system_health = json.get("system_health").and_then(|h| {
-            Some(SystemHealth {
-                memory_used_gb: h.get("memory_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                memory_total_gb: h.get("memory_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                disk_used_gb: h.get("disk_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                disk_total_gb: h.get("disk_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                uptime_days: h.get("uptime_days").and_then(|v| v.as_u64()).unwrap_or(0),
-            })
+        // .map(|h| SystemHealth {...}) 如果 system_health 存在，构建结构体
+        let system_health = json.get("system_health").map(|h| SystemHealth {
+            memory_used_gb: h.get("memory_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            memory_total_gb: h.get("memory_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            disk_used_gb: h.get("disk_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            disk_total_gb: h.get("disk_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            uptime_days: h.get("uptime_days").and_then(|v| v.as_u64()).unwrap_or(0),
         });
 
         // JSON 解析成功，直接返回结果
@@ -739,8 +763,8 @@ pub async fn get_system_status(app: AppHandle) -> Result<SystemStatus, String> {
     let disk_used = disk.and_then(|d| d.get("used")).and_then(|v| v.as_u64()).unwrap_or(0);
     let disk_total = disk.and_then(|d| d.get("total")).and_then(|v| v.as_u64()).unwrap_or(0);
     let disk_used_percent = disk.and_then(|d| d.get("used_percent")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    // 计算剩余磁盘空间（防止下溢：先检查 total > used，避免无符号整数减法溢出）
-    let disk_free = if disk_total > disk_used { disk_total - disk_used } else { 0 };
+    // 计算剩余磁盘空间（使用 saturating_sub 防止下溢，比 if-else 更安全且地道）
+    let disk_free = disk_total.saturating_sub(disk_used);
 
     // 获取废纸篓大小（使用前面定义的 get_u64 闭包）
     let trash_size = get_u64("trash_size");
@@ -1282,9 +1306,21 @@ pub async fn analyze_scan(
             ANALYZE_TIMEOUT_SECS,
             &CANCEL_ANALYZE,       // 传入取消标志的引用
             move |lines: &[String]| {
-                // 批量处理回调：lines 是这批数据的切片引用
+                // 批量处理回调：将该批次的所有行解析并存入 batch_events 列表中，最后一次性发送
+                // Vec::with_capacity(lines.len()) 预分配内存，相当于 Java 中的 new ArrayList<>(capacity)
+                // 能够避免数组频繁扩容带来的性能损耗
+                let mut batch_events = Vec::with_capacity(lines.len());
                 for line in lines {
-                    emit_mole_event(&window_clone, "mole-analyze_scan-event", line);
+                    let parsed = parse_mole_line_to_event(line);
+                    // extend 相当于 Java 中的 list.addAll(collection)
+                    // 将一行解析出来的 0 到多个事件追加到 batch_events 列表末尾
+                    batch_events.extend(parsed);
+                }
+                if !batch_events.is_empty() {
+                    // window.emit 发送一个批量 Tauri 事件，载荷（Payload）是一个事件数组
+                    // 这样原本每行发送一次 IPC，现在每 100ms/50条才发送一次，IPC 传输次数减少 95% 以上
+                    // let _ = 忽略返回值（Result），防止编译器发出未使用 Result 的警告
+                    let _ = window_clone.emit("mole-analyze_scan-event", &batch_events);
                 }
             },
         )
@@ -1457,7 +1493,7 @@ async fn move_to_trash(path: &str) -> Result<(), String> {
             // 优先使用 stderr，如果 stderr 为空则用 stdout
             // .then(|| ...) 是 bool 的方法：如果条件为 true 则返回 Some(...)，否则返回 None
             // unwrap_or(stderr.trim()) 如果 stdout 也为空，回退到 stderr
-            stderr.trim().is_empty().then(|| stdout.trim()).unwrap_or(stderr.trim())
+            if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() }
         ));
     }
 

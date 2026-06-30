@@ -92,6 +92,7 @@ const getPathKey = (path: string | null): string => {
   return path ?? "__overview__";
 };
 
+
 export const useScanStore = create<ScanStore>((set, get) => ({
   results: new Map(),
   loading: new Map(),

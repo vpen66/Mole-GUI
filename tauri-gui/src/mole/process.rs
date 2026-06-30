@@ -537,10 +537,12 @@ where
                 // 收到一行数据，更新最后输出时间
                 last_output_time = tokio::time::Instant::now();
                 buffer.push(line); // 加入缓冲区
-                // 如果缓冲区积累了 50 行以上，立即批量推送（不等 100ms 间隔）
-                if buffer.len() >= 50 {
+                // 如果缓冲区积累了 1000 行以上，立即批量推送（不等 100ms 间隔）
+                // 提高阈值至 1000 能够在大目录快速扫描时大幅减少 IPC 交互次数（降低至原本的 20 分之一）
+                // 在扫描慢速或零星输出时，仍然靠下面的 100ms 超时（flush_interval）来保证界面的实时更新
+                if buffer.len() >= 1000 {
                     on_batch(&buffer);
-                    buffer.clear(); // clear() 清空向量但保留分配的内存容量
+                    buffer.clear(); // clear() 清空向量但保留分配的内存容量（避免重复进行内存分配）
                 }
             }
             Ok(Ok(None)) => break, // EOF，进程已结束
@@ -557,8 +559,8 @@ where
         loop_count += 1;
 
         // 每 50 次循环（约 5 秒）检查一次空闲超时
-        // % 是取模运算符（相当于 Java 的 %）
-        if loop_count % 50 == 0 {
+        // is_multiple_of(50) 相当于 Java 的 loop_count % 50 == 0，但更安全/地道
+        if loop_count.is_multiple_of(50) {
             // elapsed() 返回自 last_output_time 以来经过的 Duration
             let idle_elapsed = last_output_time.elapsed();
             if idle_elapsed > idle_timeout {
@@ -574,7 +576,7 @@ where
         }
 
         // 每 100 次循环（约 10 秒）检查一次总体超时
-        if loop_count % 100 == 0 && start_time.elapsed() > timeout_duration {
+        if loop_count.is_multiple_of(100) && start_time.elapsed() > timeout_duration {
             eprintln!(
                 "[mole-gui] Overall timeout {}s reached – killing process",
                 timeout_secs

@@ -90,60 +90,62 @@ export function AnalyzePage() {
 
     const isOverview = !path;
 
-    // Listen for streaming NDJSON events from the backend
-    const unlisten = await listen<AnalyzeStreamEvent>(
+    // Listen for streaming NDJSON events from the backend (batch array)
+    const unlisten = await listen<AnalyzeStreamEvent[]>(
       "mole-analyze_scan-event",
       (event) => {
         if (myAbortId !== scanAbortRef.current) return;
-        const payload = event.payload;
+        const payloads = event.payload;
 
-        switch (payload.type) {
-          case "progress":
-            // progress events are lightweight – no store update needed
-            break;
-          case "entry": {
-            const entryPath = payload.path;
-            // For specific directory scans, verify the entry is under that directory
-            let shouldAdd = true;
-            if (!isOverview && path && path !== "/") {
-              shouldAdd = entryPath.startsWith(path + "/") || entryPath === path || entryPath.startsWith(path);
+        for (const payload of payloads) {
+          switch (payload.type) {
+            case "progress":
+              // progress events are lightweight – no store update needed
+              break;
+            case "entry": {
+              const entryPath = payload.path;
+              // For specific directory scans, verify the entry is under that directory
+              let shouldAdd = true;
+              if (!isOverview && path && path !== "/") {
+                shouldAdd = entryPath.startsWith(path + "/") || entryPath === path || entryPath.startsWith(path);
+              }
+              if (shouldAdd) {
+                entriesRef.current.push({
+                  name: payload.name,
+                  path: payload.path,
+                  size: payload.size,
+                  is_dir: payload.is_dir,
+                  insight: payload.insight,
+                  cleanable: payload.cleanable,
+                  last_access: payload.last_access,
+                });
+              }
+              break;
             }
-            if (shouldAdd) {
-              entriesRef.current.push({
-                name: payload.name,
+            case "large_file": {
+              const largeFilePath = payload.path;
+              let shouldAdd = true;
+              if (!isOverview && path && path !== "/") {
+                shouldAdd = largeFilePath.startsWith(path + "/") || largeFilePath === path || largeFilePath.startsWith(path);
+              }
+              if (shouldAdd) {
+                largeFilesRef.current.push({
+                  name: payload.name,
+                  path: payload.path,
+                  size: payload.size,
+                });
+              }
+              break;
+            }
+            case "summary":
+              summaryRef.current = {
                 path: payload.path,
-                size: payload.size,
-                is_dir: payload.is_dir,
-                insight: payload.insight,
-                cleanable: payload.cleanable,
-                last_access: payload.last_access,
-              });
-            }
-            break;
+                overview: payload.overview,
+                totalSize: payload.total_size,
+                totalFiles: payload.total_files,
+              };
+              break;
           }
-          case "large_file": {
-            const largeFilePath = payload.path;
-            let shouldAdd = true;
-            if (!isOverview && path && path !== "/") {
-              shouldAdd = largeFilePath.startsWith(path + "/") || largeFilePath === path || largeFilePath.startsWith(path);
-            }
-            if (shouldAdd) {
-              largeFilesRef.current.push({
-                name: payload.name,
-                path: payload.path,
-                size: payload.size,
-              });
-            }
-            break;
-          }
-          case "summary":
-            summaryRef.current = {
-              path: payload.path,
-              overview: payload.overview,
-              totalSize: payload.total_size,
-              totalFiles: payload.total_files,
-            };
-            break;
         }
       }
     );
