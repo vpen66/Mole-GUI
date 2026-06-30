@@ -23,7 +23,7 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "signingIdentity": null,
+      "signingIdentity": "Apple Development: 1453313323@qq.com (AC2K4XJ4US)",
       "providerShortName": null,
       "entitlements": "entitlements.plist",
       "hardenedRuntime": true

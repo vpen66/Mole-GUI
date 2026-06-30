@@ -68,6 +68,57 @@ jobs:
           # 使用从 Git tag 提取的版本号
           tagName: ${{ steps.extract_version.outputs.TAG }}
           releaseName: "MoleGui ${{ steps.extract_version.outputs.TAG }}"
-          releaseBody: "Mole GUI macOS Desktop App release. Download the DMG or APP package below."
+          releaseBody: |
+            ## 📦 Mole GUI macOS Desktop App
+            
+            ### ⚠️ 重要提示：首次安装需要手动授权
+            
+            由于本项目未购买 Apple Developer 账号（$99/年），GitHub CI 构建的 DMG **未经过代码签名和公证**，macOS Gatekeeper 会阻止直接安装。
+            
+            **请按照以下步骤完成安装：**
+            
+            #### 方法 1：右键打开（推荐）
+            1. 下载 DMG 文件后，**右键点击** → 选择 `"Open"`（打开）
+            2. 系统弹出警告对话框时，点击 `"Open"`（而不是 "Move to Trash"）
+            3. 输入管理员密码确认
+            4. 将 MoleGui.app 拖拽到 Applications 文件夹
+            5. 首次运行时可能还会弹出类似警告，同样点击 `"Open"` 即可
+            6. ✅ 之后就可以正常使用了，不会再有警告！
+            
+            #### 方法 2：命令行绕过（高级用户）
+            ```bash
+            # 移除 quarantine 属性
+            xattr -rd com.apple.quarantine /Applications/MoleGui.app
+            
+            # 或者临时禁用 Gatekeeper（不推荐长期使用）
+            sudo spctl --master-disable
+            ```
+            
+            ---
+            
+            **为什么需要付费开发者账号？**
+            - 如果希望用户下载后**双击就能运行**（无警告），需要 Apple Developer Program ($99/年)
+            - 包含代码签名证书 + Notarization（公证）服务
+            - 对于个人项目或内部测试，当前的免费方案完全够用！
+            
+            **本地开发用户可以自行签名：**
+            如果你有 Apple 开发者证书，可以克隆本仓库后本地构建带签名的版本：
+            ```bash
+            git clone https://github.com/tw93/Mole-GUI.git
+            cd Mole-GUI
+            pnpm install
+            pnpm tauri build
+            ```
+            
+            ---
+            
+            ### 📥 下载链接
+            
+            | 架构 | 文件名 | 大小 |
+            |------|--------|------|
+            | Apple Silicon (M1/M2/M3) | `MoleGui_${{ steps.extract_version.outputs.VERSION }}_aarch64.dmg` | ~4.5 MB |
+            | Intel (x86_64) | `MoleGui_${{ steps.extract_version.outputs.VERSION }}_x64.dmg` | ~4.5 MB |
+            
+            > 💡 **提示**：如果你的 Mac 是 2020 年及以后发布的，通常是 Apple Silicon (ARM64) 架构。
           releaseDraft: false # 直接发布 Release，将打包后的资产直接上传到公开 Release 中
           prerelease: false

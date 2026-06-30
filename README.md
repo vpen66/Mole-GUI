@@ -85,6 +85,24 @@ Mole-GUI/
 
 ## 🚀 快速开始
 
+### ⚠️ macOS 安装说明（重要）
+
+**如果你是从 GitHub Releases 下载 DMG 文件：**
+
+由于本项目未购买 Apple Developer 账号，GitHub CI 构建的 DMG **未经过代码签名和公证**，macOS Gatekeeper 会阻止直接安装。
+
+**请按照以下步骤完成安装：**
+
+1. 下载 DMG 后，**右键点击** → 选择 `"Open"`（打开）
+2. 系统弹出警告时，点击 `"Open"`（而不是 "Move to Trash"）
+3. 输入管理员密码确认
+4. 将 MoleGui.app 拖拽到 Applications 文件夹
+5. ✅ 之后就可以正常使用了！
+
+详细安装指南请查看：[INSTALLATION.md](INSTALLATION.md)
+
+---
+
 ### 前置条件
 
 1. **安装 Mole CLI**（核心依赖，没有它 GUI 无法运行）
