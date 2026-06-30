@@ -19,6 +19,7 @@ export function SettingsPage() {
   const [touchIdEnabled, setTouchIdEnabled] = useState<boolean | null>(null);
   const [updatingTouchId, setUpdatingTouchId] = useState(false);
   const [touchIdError, setTouchIdError] = useState("");
+  const [hasFDA, setHasFDA] = useState(true);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -40,10 +41,20 @@ export function SettingsPage() {
     }
   }, []);
 
+  const checkFDA = useCallback(async () => {
+    try {
+      const status = await invoke<boolean>("check_full_disk_access");
+      setHasFDA(status);
+    } catch (err) {
+      console.error("Failed to check FDA:", err);
+    }
+  }, []);
+
   useEffect(() => {
     loadConfig();
     loadTouchIdStatus();
-  }, [loadConfig, loadTouchIdStatus]);
+    checkFDA();
+  }, [loadConfig, loadTouchIdStatus, checkFDA]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -246,6 +257,30 @@ export function SettingsPage() {
             <div className="flex items-center gap-2 text-xs text-red-400 bg-red-950/10 border border-red-900/30 rounded-lg p-2.5">
               <AlertCircle size={12} className="shrink-0" />
               <span>{touchIdError}</span>
+            </div>
+          )}
+
+          {!hasFDA && (
+            <div className="bg-amber-950/20 border border-amber-800/50 rounded-xl p-4 flex items-start gap-3 mt-2">
+              <AlertCircle size={18} className="text-amber-500 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-200/90 leading-relaxed flex-1">
+                <span className="font-semibold block text-sm text-amber-400 mb-1">
+                  {t("clean.fdaMissingTitle")}
+                </span>
+                {t("clean.fdaMissingDesc")}
+                <button
+                  onClick={async () => {
+                    try {
+                      await invoke("open_fda_settings");
+                    } catch (err) {
+                      console.error(err);
+                    }
+                  }}
+                  className="mt-2.5 px-3 py-1 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-600/60 rounded text-[10px] font-semibold text-amber-200 transition-colors block"
+                >
+                  前往系统设置开启授权 (Authorize in Settings)
+                </button>
+              </div>
             </div>
           )}
         </div>

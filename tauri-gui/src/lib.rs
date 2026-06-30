@@ -60,6 +60,7 @@ pub fn run() {
             save_purge_paths,        // 保存项目扫描路径
             get_touchid_status,      // 获取 Touch ID 状态
             set_touchid_enabled,     // 启用/禁用 Touch ID
+            open_fda_settings,       // 打开完全磁盘访问权限设置
         ])
         // 应用初始化回调：在应用窗口创建之前执行的设置逻辑
         // |app| 是一个闭包（相当于 Java 的 Lambda 或匿名内部类），app 是 Tauri 应用实例

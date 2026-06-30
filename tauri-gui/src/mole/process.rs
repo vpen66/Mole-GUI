@@ -724,10 +724,16 @@ where
     // 将参数数组拼接成空格分隔的字符串（相当于 String.join(" ", args)）
     let cmd_args = args.join(" ");
 
-    // 构建完整的 shell 命令字符串：
-    //   echo y | "/path/to/mole" clean --targets "..." --permanent
-    // echo y | 用于自动回答交互式确认提示（如"确定要删除吗？[y/n]"）
-    let shell_cmd = format!("echo y | \"{}\" {} --permanent", mole_path.display(), cmd_args);
+    // 判断第一个参数是否是 "touchid"
+    // args.first() 返回 Option<&&str>；.copied() 将其转换为 Option<&str>
+    // 类似于 Java 中的 Optional.ofNullable(args.get(0)).filter(arg -> arg.equals("touchid"))
+    let shell_cmd = if args.first().copied() == Some("touchid") {
+        // 如果是 touchid 命令，直接执行（touchid 不支持 --permanent 参数，也不需要 echo y 确认）
+        format!("\"{}\" {}", mole_path.display(), cmd_args)
+    } else {
+        // 构建完整的 shell 命令字符串，并附带自动回答确认和 --permanent 标志（用于 uninstall 等命令）
+        format!("echo y | \"{}\" {} --permanent", mole_path.display(), cmd_args)
+    };
 
     // 构建 AppleScript 脚本
     // replace('\\', "\\\\") 将单个反斜杠转义为双反斜杠（AppleScript 字符串转义）

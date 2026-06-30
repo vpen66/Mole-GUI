@@ -2037,33 +2037,150 @@ pub async fn get_touchid_status(app: AppHandle) -> Result<bool, String> {
 
 /// 启用或禁用系统 Touch ID Sudo 授权（指纹密码）。
 ///
+/// **重要设计决策**：这里不再通过 `mole touchid enable/disable` CLI 命令来操作，
+/// 而是直接在 osascript 的 shell 脚本中内联执行 PAM 文件操作。
+///
+/// **原因**：`mole touchid` 脚本内部使用 `sudo tee` 和 `sudo install` 写入 `/etc/pam.d/sudo_local`。
+/// 当通过 `osascript "do shell script ... with administrator privileges"` 调用时，
+/// 虽然 shell 以 root 身份运行，但 macOS 的 TCC (Transparency, Consent, and Control) 机制
+/// 不会将父级应用的「完全磁盘访问权限 (FDA)」传递给 osascript 子进程。
+/// 这导致 `tee`/`install` 写入 `/etc/pam.d/` 时报 `Operation not permitted`。
+///
+/// **解决方案**：跳过 mole CLI，直接在 osascript 提权 shell 中用 `/bin/sh` 原生命令
+/// （如 `echo >>`、`grep -v`、`cat`、`chmod`、`chown`）操作文件。
+/// `do shell script ... with administrator privileges` 本身就是 root，
+/// 在该上下文中直接操作文件不受 TCC 的 FDA 检查限制。
+///
 /// 参数：
-///   app     — Tauri 应用句柄
 ///   enabled — true 表示启用，false 表示禁用
 /// 返回：
-///   Result<(), String> — 成功返回 Ok(())，若在 AppleScript 弹出密码确认中取消则返回错误。
+///   Result<(), String> — 成功返回 Ok(())，若在密码确认中取消或执行失败则返回错误。
 #[tauri::command]
-pub async fn set_touchid_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    // 根据传入的布尔值确定 Mole 子命令动作：enable (启用) 或 disable (禁用)
-    let action = if enabled { "enable" } else { "disable" };
-    
-    // 运行管理员权限特权的进程（需要调用 AppleScript 的 administrator privileges，会弹出系统原生密码确认框）
-    // 参数含义：app句柄，命令数组，超时秒数（30秒），行输出回调闭包（我们不关注中途流式输出，所以传入空闭包 `|_line| {}`）
-    let result = process::run_mole_streaming_with_timeout_sudo(
-        Some(&app),
-        &["touchid", action],
-        30, // 30 秒超时
-        |_line| {} // 忽略每行回调
-    ).await?;
-    
-    // 判断最终执行结果
-    if result.exit_code == 0 && !result.timed_out {
-        // 成功，返回 Ok(())（相当于 Java 中正常返回 void 结束）
-        Ok(())
-    } else if result.timed_out {
-        Err("Sudo 命令执行超时".to_string())
+pub async fn set_touchid_enabled(enabled: bool) -> Result<(), String> {
+    // PAM 配置文件路径（macOS Sonoma+ 使用 sudo_local）
+    let pam_sudo = "/etc/pam.d/sudo";
+    let pam_sudo_local = "/etc/pam.d/sudo_local";
+    // PAM 行：Touch ID 认证模块（sufficient 表示"如果此模块认证成功就足够了"）
+    let pam_tid_line = "auth       sufficient     pam_tid.so";
+
+    // 根据 enable/disable 构建不同的 shell 脚本
+    let shell_script = if enabled {
+        // 启用 Touch ID：
+        // 1. 检查 /etc/pam.d/sudo 中是否引用了 sudo_local（macOS Sonoma+ 的新方式）
+        // 2. 如果引用了，则在 sudo_local 中添加 pam_tid.so 行
+        // 3. 如果没引用（旧版 macOS），则直接修改 /etc/pam.d/sudo
+        format!(
+            r#"
+if grep -q 'sudo_local' '{pam_sudo}' 2>/dev/null; then
+    if [ -f '{pam_sudo_local}' ] && grep -q 'pam_tid.so' '{pam_sudo_local}' 2>/dev/null; then
+        echo 'already_enabled'
+    else
+        if [ ! -f '{pam_sudo_local}' ]; then
+            echo '# sudo_local: local customizations for sudo' > '{pam_sudo_local}'
+        fi
+        echo '{pam_tid_line}' >> '{pam_sudo_local}'
+        chmod 444 '{pam_sudo_local}'
+        chown root:wheel '{pam_sudo_local}'
+        echo 'ok'
+    fi
+else
+    if grep -q 'pam_tid.so' '{pam_sudo}' 2>/dev/null; then
+        echo 'already_enabled'
+    else
+        TMP=$(mktemp)
+        head -1 '{pam_sudo}' > "$TMP"
+        echo '{pam_tid_line}' >> "$TMP"
+        tail -n +2 '{pam_sudo}' >> "$TMP"
+        cat "$TMP" > '{pam_sudo}'
+        rm -f "$TMP"
+        echo 'ok'
+    fi
+fi
+"#,
+            pam_sudo = pam_sudo,
+            pam_sudo_local = pam_sudo_local,
+            pam_tid_line = pam_tid_line,
+        )
     } else {
-        Err("配置 Touch ID 授权失败，操作可能被取消或没有管理员权限".to_string())
+        // 禁用 Touch ID：
+        // 1. 从 sudo_local 和 sudo 中移除所有包含 pam_tid.so 的行
+        format!(
+            r#"
+FOUND=0
+if [ -f '{pam_sudo_local}' ] && grep -q 'pam_tid.so' '{pam_sudo_local}' 2>/dev/null; then
+    TMP=$(mktemp)
+    grep -v 'pam_tid.so' '{pam_sudo_local}' > "$TMP"
+    cat "$TMP" > '{pam_sudo_local}'
+    chmod 444 '{pam_sudo_local}'
+    chown root:wheel '{pam_sudo_local}'
+    rm -f "$TMP"
+    FOUND=1
+fi
+if grep -q 'pam_tid.so' '{pam_sudo}' 2>/dev/null; then
+    TMP=$(mktemp)
+    grep -v 'pam_tid.so' '{pam_sudo}' > "$TMP"
+    cat "$TMP" > '{pam_sudo}'
+    rm -f "$TMP"
+    FOUND=1
+fi
+if [ "$FOUND" -eq 0 ]; then
+    echo 'already_disabled'
+else
+    echo 'ok'
+fi
+"#,
+            pam_sudo = pam_sudo,
+            pam_sudo_local = pam_sudo_local,
+        )
+    };
+
+    // 将 shell 脚本包装进 AppleScript 的 `do shell script ... with administrator privileges`
+    // 这会弹出 macOS 原生密码对话框，用户输入密码后以 root 身份执行脚本
+    // 注意：shell 脚本中的反斜杠和双引号需要在 AppleScript 字符串中进行转义
+    let escaped = shell_script
+        .replace('\\', "\\\\")   // 反斜杠 → 双反斜杠
+        .replace('"', "\\\"");   // 双引号 → 转义双引号
+
+    let apple_script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        escaped
+    );
+
+    // 使用 tokio 异步 Command 执行 osascript
+    // osascript 是 macOS 内置的 AppleScript 解释器
+    let output = tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&apple_script)
+        .output()
+        .await
+        .map_err(|e| format!("启动 osascript 失败: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        // 提取 stderr 中的错误信息，帮助用户理解失败原因
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // 如果 stderr 中包含 "User canceled"，说明用户在密码对话框中点击了取消
+        if stderr.contains("User canceled") {
+            Err("操作已取消".to_string())
+        } else {
+            Err(format!("配置 Touch ID 授权失败: {}", stderr.trim()))
+        }
     }
+}
+
+/// 调用 macOS 的 open 工具打开系统偏好设置的完全磁盘访问权限 (FDA) 页面。
+///
+/// 前端调用：await invoke('open_fda_settings')
+/// 返回：Result<(), String>
+#[tauri::command]
+pub fn open_fda_settings() -> Result<(), String> {
+    // std::process::Command 类似于 Java 的 ProcessBuilder
+    // 使用 open 指令调用系统自带协议直接定位到完全磁盘访问权限设置界面
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        .status()
+        .map_err(|e| format!("无法打开系统偏好设置: {}", e))?;
+    Ok(())
 }
 
