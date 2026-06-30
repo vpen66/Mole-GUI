@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Window};
 use crate::mole::process;
 use crate::mole::settings;
@@ -765,6 +766,9 @@ pub async fn get_history(app: AppHandle, limit: Option<u32>) -> Result<String, S
     process::run_mole_capture(Some(&app), &["history", "--json", "--limit", &limit_str]).await
 }
 
+/// Global flag to signal the running analyze process to cancel.
+static CANCEL_ANALYZE: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 pub async fn analyze_scan(
     app: AppHandle,
@@ -774,6 +778,9 @@ pub async fn analyze_scan(
     let window_clone = window.clone();
     let app_clone = app.clone();
 
+    // Reset cancel flag before starting a new scan
+    CANCEL_ANALYZE.store(false, Ordering::SeqCst);
+
     let handle = tokio::spawn(async move {
         let mut args = vec!["analyze", "--json"];
         let path_ref;
@@ -782,13 +789,17 @@ pub async fn analyze_scan(
             args.push(path_ref);
         }
 
-        // Use streaming to show real-time progress
-        let result = process::run_mole_streaming_with_timeout(
+        // Use streaming with throttle: collect lines and emit in batches
+        // to avoid flooding the frontend with hundreds of events per second.
+        let result = process::run_mole_streaming_throttled(
             Some(&app_clone),
             &args,
             ANALYZE_TIMEOUT_SECS,
-            move |line| {
-                emit_mole_event(&window_clone, "mole-analyze_scan-event", &line);
+            &CANCEL_ANALYZE,
+            move |lines: &[String]| {
+                for line in lines {
+                    emit_mole_event(&window_clone, "mole-analyze_scan-event", line);
+                }
             },
         )
         .await;
@@ -801,15 +812,14 @@ pub async fn analyze_scan(
                         ANALYZE_TIMEOUT_SECS
                     ));
                 }
-                // For analyze, we still need to return the final JSON result
-                // The streaming events will be used for progress display
+                if streaming.cancelled {
+                    eprintln!("[mole-gui] Analyze scan was cancelled by user");
+                    return Ok(String::new());
+                }
                 Ok(String::new())
             }
             Err(e) => {
-                // If the scan was cancelled by a new request, don't treat it as an error
-                // This is expected behavior when user navigates away and back
-                if e.contains("cancelled by new request") {
-                    // Return empty string to indicate graceful cancellation
+                if e.contains("cancelled") {
                     eprintln!("[mole-gui] Analyze scan was gracefully cancelled: {}", e);
                     Ok(String::new())
                 } else {
@@ -822,59 +832,101 @@ pub async fn analyze_scan(
     handle.await.map_err(|e| format!("Task error: {}", e))?
 }
 
+/// Cancel a running analyze scan. Called from the frontend "Stop" button.
+#[tauri::command]
+pub async fn cancel_analyze_scan() -> Result<(), String> {
+    CANCEL_ANALYZE.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn analyze_delete(
-    app: AppHandle,
+    _app: AppHandle,
     window: Window,
     paths: Vec<String>,
 ) -> Result<CleanResult, String> {
-    let window_clone = window.clone();
-    let app_clone = app.clone();
+    if paths.is_empty() {
+        return Err("No paths to delete".to_string());
+    }
 
-    let handle = tokio::spawn(async move {
-        let lines: Vec<String> = Vec::new();
+    // Validate all paths first
+    for path in &paths {
+        validate_path(path)?;
+    }
 
-        // Build arguments for mo delete command
-        let mut args = vec!["delete"];
-        for path in &paths {
-            args.push(path);
-        }
+    let mut success_count = 0;
+    let mut errors: Vec<String> = Vec::new();
 
-        let result = process::run_mole_streaming_with_timeout(
-            Some(&app_clone),
-            &args,
-            CLEAN_TIMEOUT_SECS,
-            move |line| {
-                emit_mole_event(&window_clone, "mole-analyze_delete-event", &line);
-            },
-        )
-        .await;
-
-        match result {
-            Ok(streaming) => {
-                let error = if streaming.timed_out {
-                    Some(format!(
-                        "Delete timed out after {}s.",
-                        CLEAN_TIMEOUT_SECS
-                    ))
-                } else {
-                    None
-                };
-                CleanResult {
-                    success: streaming.exit_code == 0 && error.is_none(),
-                    lines,
-                    error,
-                }
+    for path in &paths {
+        match move_to_trash(path).await {
+            Ok(_) => {
+                success_count += 1;
+                emit_mole_event(&window, "mole-analyze_delete-event", 
+                    &format!("Successfully moved to trash: {}", path));
             }
-            Err(e) => CleanResult {
-                success: false,
-                lines,
-                error: Some(e),
-            },
+            Err(e) => {
+                errors.push(format!("Failed to delete {}: {}", path, e));
+            }
         }
-    });
+    }
 
-    handle.await.map_err(|e| format!("Task error: {}", e))
+    if !errors.is_empty() {
+        return Ok(CleanResult {
+            success: false,
+            lines: vec![],
+            error: Some(errors.join("\n")),
+        });
+    }
+
+    Ok(CleanResult {
+        success: true,
+        lines: vec![format!("Successfully moved {} item(s) to trash", success_count)],
+        error: None,
+    })
+}
+
+/// Validates a path for deletion safety
+fn validate_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("Path is empty".to_string());
+    }
+    if !path.starts_with('/') {
+        return Err(format!("Path must be absolute: {}", path));
+    }
+    if path.contains('\0') {
+        return Err("Path contains null bytes".to_string());
+    }
+    // Check for path traversal attempts
+    if path.contains("..") {
+        return Err(format!("Path contains traversal components: {}", path));
+    }
+    Ok(())
+}
+
+/// Moves a file or directory to macOS Trash using Finder's AppleScript
+async fn move_to_trash(path: &str) -> Result<(), String> {
+    // Escape path for AppleScript (handle quotes and backslashes)
+    let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    
+    let script = format!("tell application \"Finder\" to delete POSIX file \"{}\"", escaped_path);
+    
+    let output = tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute osascript: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "Finder failed to move to trash: {}",
+            stderr.trim().is_empty().then(|| stdout.trim()).unwrap_or(stderr.trim())
+        ));
+    }
+    
+    Ok(())
 }
 
 #[tauri::command]

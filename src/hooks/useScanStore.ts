@@ -45,6 +45,14 @@ interface ScanActions {
   // Update entry count
   setEntryCount: (path: string | null, count: number) => void;
   
+  // Batch update: update entries, large files, and summary in one state mutation
+  batchUpdate: (
+    path: string | null,
+    entries: AnalyzeEntry[],
+    largeFiles: AnalyzeLargeFile[],
+    summary: { path: string; overview: boolean; totalSize: number; totalFiles?: number }
+  ) => void;
+
   // Add to active scans
   addActiveScan: (path: string | null) => void;
   
@@ -160,6 +168,25 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     set((state) => ({
       entryCounts: new Map(state.entryCounts).set(key, count),
     }));
+  },
+
+  batchUpdate: (path, entries, largeFiles, summary) => {
+    const key = getPathKey(path);
+    set((state) => {
+      const existing = state.results.get(key);
+      const updated: AnalyzeResult = {
+        path: summary.path ?? existing?.path ?? "/",
+        overview: summary.overview ?? existing?.overview ?? false,
+        entries,
+        large_files: largeFiles.length > 0 ? largeFiles : existing?.large_files,
+        total_size: summary.totalSize ?? existing?.total_size ?? 0,
+        total_files: summary.totalFiles ?? existing?.total_files,
+      };
+      return {
+        results: new Map(state.results).set(key, updated),
+        entryCounts: new Map(state.entryCounts).set(key, entries.length),
+      };
+    });
   },
 
   addActiveScan: (path) => {

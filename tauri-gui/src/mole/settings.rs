@@ -5,6 +5,7 @@ const STORE_PATH: &str = "settings.json";
 const MOLE_PATH_KEY: &str = "mole_path";
 
 /// Get the user-configured Mole CLI path from the store, if any.
+/// Returns the canonicalized (real-case) path to avoid issues on case-insensitive filesystems.
 pub fn get_configured_mole_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     let store = app.store(STORE_PATH).ok()?;
     let value = store.get(MOLE_PATH_KEY)?;
@@ -14,7 +15,9 @@ pub fn get_configured_mole_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     }
     let path = PathBuf::from(path_str);
     if path.exists() {
-        Some(path)
+        // Canonicalize to resolve the real path with correct casing
+        // (important on macOS case-insensitive filesystems)
+        path.canonicalize().ok().or(Some(path))
     } else {
         None
     }

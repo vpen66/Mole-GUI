@@ -21,6 +21,7 @@ pub fn run() {
             optimize_dry_run,
             optimize_execute,
             analyze_scan,
+            cancel_analyze_scan,
             analyze_delete,
             get_history,
             check_sudo_session,

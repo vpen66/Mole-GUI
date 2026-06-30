@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "@/i18n";
@@ -32,6 +32,38 @@ export function AnalyzePage() {
   const error = scanStore.getError(currentPath);
   const entryCount = scanStore.getEntryCount(currentPath);
 
+  // Refs for throttled batch updates – accumulate events in refs,
+  // then flush to the Zustand store on a timer so we don't trigger
+  // a React re-render for every single NDJSON line.
+  const entriesRef = useRef<AnalyzeEntry[]>([]);
+  const largeFilesRef = useRef<AnalyzeLargeFile[]>([]);
+  const summaryRef = useRef({ path: "/", overview: true, totalSize: 0, totalFiles: undefined as number | undefined });
+  const scanKeyRef = useRef<string | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const FLUSH_INTERVAL = 120; // ms – flush at most ~8 times/sec
+
+  const flushToStore = useCallback(() => {
+    const key = scanKeyRef.current;
+    scanStore.batchUpdate(
+      key,
+      [...entriesRef.current],
+      [...largeFilesRef.current],
+      { ...summaryRef.current },
+    );
+  }, [scanStore]);
+
+  const startFlushTimer = useCallback(() => {
+    if (flushTimerRef.current) clearInterval(flushTimerRef.current);
+    flushTimerRef.current = setInterval(flushToStore, FLUSH_INTERVAL);
+  }, [flushToStore]);
+
+  const stopFlushTimer = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+  }, []);
+
   const scan = useCallback(async (path?: string) => {
     // Abort any previous in-flight scan so its completion cannot
     // overwrite the new scan's data.
@@ -40,17 +72,22 @@ export function AnalyzePage() {
 
     const key: string | null = path ?? null;
 
+    // Update the key ref so flushToStore knows where to write
+    scanKeyRef.current = key;
+
+    // Stop any previous flush timer
+    stopFlushTimer();
+
+    // Reset accumulation refs
+    entriesRef.current = [];
+    largeFilesRef.current = [];
+    summaryRef.current = { path: path ?? "/", overview: !path, totalSize: 0, totalFiles: undefined };
+
     // Start scan in store
     scanStore.startScan(key);
     scanStore.setEntryCount(key, 0);
 
-    // Accumulate NDJSON streaming events into an AnalyzeResult
-    const entries: AnalyzeEntry[] = [];
-    const largeFiles: AnalyzeLargeFile[] = [];
-    let summaryPath = path ?? "/";
-    let isOverview = !path;
-    let totalSize = 0;
-    let totalFiles: number | undefined;
+    const isOverview = !path;
 
     // Listen for streaming NDJSON events from the backend
     const unlisten = await listen<AnalyzeStreamEvent>(
@@ -58,49 +95,60 @@ export function AnalyzePage() {
       (event) => {
         if (myAbortId !== scanAbortRef.current) return;
         const payload = event.payload;
+
         switch (payload.type) {
           case "progress":
+            // progress events are lightweight – no store update needed
             break;
-          case "entry":
-            entries.push({
-              name: payload.name,
-              path: payload.path,
-              size: payload.size,
-              is_dir: payload.is_dir,
-              insight: payload.insight,
-              cleanable: payload.cleanable,
-              last_access: payload.last_access,
-            });
-            scanStore.setEntryCount(key, entries.length);
-            // Update result incrementally so entries appear during scanning
-            scanStore.updateResult(
-              key,
-              {
-                path: summaryPath,
-                overview: isOverview,
-                total_size: totalSize,
-                total_files: totalFiles,
-              },
-              [...entries],
-              largeFiles.length > 0 ? [...largeFiles] : undefined
-            );
+          case "entry": {
+            const entryPath = payload.path;
+            // For specific directory scans, verify the entry is under that directory
+            let shouldAdd = true;
+            if (!isOverview && path && path !== "/") {
+              shouldAdd = entryPath.startsWith(path + "/") || entryPath === path || entryPath.startsWith(path);
+            }
+            if (shouldAdd) {
+              entriesRef.current.push({
+                name: payload.name,
+                path: payload.path,
+                size: payload.size,
+                is_dir: payload.is_dir,
+                insight: payload.insight,
+                cleanable: payload.cleanable,
+                last_access: payload.last_access,
+              });
+            }
             break;
-          case "large_file":
-            largeFiles.push({
-              name: payload.name,
-              path: payload.path,
-              size: payload.size,
-            });
+          }
+          case "large_file": {
+            const largeFilePath = payload.path;
+            let shouldAdd = true;
+            if (!isOverview && path && path !== "/") {
+              shouldAdd = largeFilePath.startsWith(path + "/") || largeFilePath === path || largeFilePath.startsWith(path);
+            }
+            if (shouldAdd) {
+              largeFilesRef.current.push({
+                name: payload.name,
+                path: payload.path,
+                size: payload.size,
+              });
+            }
             break;
+          }
           case "summary":
-            summaryPath = payload.path;
-            isOverview = payload.overview;
-            totalSize = payload.total_size;
-            totalFiles = payload.total_files;
+            summaryRef.current = {
+              path: payload.path,
+              overview: payload.overview,
+              totalSize: payload.total_size,
+              totalFiles: payload.total_files,
+            };
             break;
         }
       }
     );
+
+    // Start periodic flush so UI updates incrementally
+    startFlushTimer();
 
     try {
       await invoke<string>("analyze_scan", { path: path ?? null });
@@ -108,24 +156,29 @@ export function AnalyzePage() {
       // If a newer scan was started while we were waiting, bail out.
       if (myAbortId !== scanAbortRef.current) return;
 
+      // Final flush to make sure everything is in the store
+      stopFlushTimer();
+      flushToStore();
+
       // Final result from accumulated events
       const finalResult: AnalyzeResult = {
-        path: summaryPath,
-        overview: isOverview,
-        entries,
-        large_files: largeFiles.length > 0 ? largeFiles : undefined,
-        total_size: totalSize,
-        total_files: totalFiles,
+        path: summaryRef.current.path,
+        overview: summaryRef.current.overview,
+        entries: entriesRef.current,
+        large_files: largeFilesRef.current.length > 0 ? largeFilesRef.current : undefined,
+        total_size: summaryRef.current.totalSize,
+        total_files: summaryRef.current.totalFiles,
       };
 
       scanStore.completeScan(key, finalResult);
     } catch (err) {
       if (myAbortId !== scanAbortRef.current) return;
+      stopFlushTimer();
       scanStore.setError(key, err instanceof Error ? err.message : String(err));
     } finally {
       unlisten();
     }
-  }, [scanStore]);
+  }, [scanStore, flushToStore, startFlushTimer, stopFlushTimer]);
 
   // Trigger initial scan on mount if no result exists for current path
   useEffect(() => {
@@ -145,7 +198,10 @@ export function AnalyzePage() {
   const handleDrillDown = (entry: AnalyzeEntry) => {
     if (!entry.is_dir) return;
     scanStore.pushPath(entry.path);
-    scan(entry.path);
+    // Use cached result if available; only scan if not yet loaded
+    if (!scanStore.getResult(entry.path)) {
+      scan(entry.path);
+    }
   };
 
   // Handle clicking on a breadcrumb path segment
@@ -153,7 +209,10 @@ export function AnalyzePage() {
     if (targetPath === null) {
       // Go back to overview (root)
       scanStore.clearPaths();
-      scan(undefined);
+      // Use cached result if available
+      if (!scanStore.getResult(null)) {
+        scan(undefined);
+      }
     } else {
       // Find the index of the target path in the stack
       const currentStack = useScanStore.getState().pathStack;
@@ -161,22 +220,22 @@ export function AnalyzePage() {
       
       if (targetIndex !== -1) {
         // Pop paths until we reach the target
-        // We need to pop (currentLength - targetIndex - 1) times
         const popsNeeded = currentStack.length - targetIndex - 1;
-        
         for (let i = 0; i < popsNeeded; i++) {
           scanStore.popPath();
         }
         
-        // Scan the target path if not already loaded
+        // Scan the target path only if not already cached
         if (!scanStore.getResult(targetPath)) {
           scan(targetPath);
         }
       } else {
         // Path not in stack, need to navigate there directly
-        // Clear stack and set new path
         scanStore.setPathStack([targetPath]);
-        scan(targetPath);
+        // Use cached result if available
+        if (!scanStore.getResult(targetPath)) {
+          scan(targetPath);
+        }
       }
     }
   };
@@ -188,13 +247,21 @@ export function AnalyzePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath]);
 
-  const handleStopScan = useCallback(() => {
-    // Increment abort ref to cancel current scan
+  const handleStopScan = useCallback(async () => {
+    // Increment abort ref to cancel current scan on frontend
     scanAbortRef.current = (scanAbortRef.current ?? 0) + 1;
+    // Stop the flush timer
+    stopFlushTimer();
+    // Tell the Rust backend to kill the mole process
+    try {
+      await invoke("cancel_analyze_scan");
+    } catch {
+      // ignore
+    }
     // Clear loading state
     scanStore.setLoading(currentPath, false);
     console.log('[Analyze] Scan stopped by user');
-  }, [currentPath, scanStore]);
+  }, [currentPath, scanStore, stopFlushTimer]);
 
   const handleSelectToggle = (path: string) => {
     setSelectedPaths(prev => {
@@ -235,9 +302,18 @@ export function AnalyzePage() {
     setDeleteError(null);
     
     try {
-      await invoke("analyze_delete", {
+      const result = await invoke("analyze_delete", {
         paths: Array.from(selectedPaths),
       });
+      
+      // Check if the operation was successful
+      if (result && typeof result === 'object' && 'success' in result) {
+        const cleanResult = result as { success: boolean; error?: string };
+        
+        if (!cleanResult.success) {
+          throw new Error(cleanResult.error || "Failed to delete files");
+        }
+      }
       
       // Clear selection after successful delete
       setSelectedPaths(new Set());
@@ -261,9 +337,10 @@ export function AnalyzePage() {
     setShowDeleteConfirm(false);
   };
 
-  const sortedEntries = result
-    ? [...result.entries].sort((a, b) => b.size - a.size)
-    : [];
+  const sortedEntries = useMemo(
+    () => result ? [...result.entries].sort((a, b) => b.size - a.size) : [],
+    [result?.entries]
+  );
 
   const maxSize = sortedEntries[0]?.size ?? 1;
 
@@ -290,18 +367,25 @@ export function AnalyzePage() {
               {(() => {
                 // Parse the current path into segments
                 const pathSegments = currentPath.split('/').filter(Boolean);
-                let accumulatedPath = '';
+                
+                console.log('[Analyze] Rendering breadcrumbs:', { currentPath, pathSegments });
                 
                 return pathSegments.map((segment, index) => {
-                  accumulatedPath += '/' + segment;
+                  // Build absolute path: join all segments up to and including current one
+                  const accumulatedPath = '/' + pathSegments.slice(0, index + 1).join('/');
                   const isLast = index === pathSegments.length - 1;
+                  
+                  console.log(`[Analyze] Segment ${index}:`, { segment, accumulatedPath, isLast });
                   
                   return (
                     <React.Fragment key={accumulatedPath}>
                       <ChevronRight size={12} className="text-surface-500 shrink-0" />
                       {!isLast ? (
                         <button
-                          onClick={() => handleBreadcrumbClick(accumulatedPath)}
+                          onClick={() => {
+                            console.log('[Analyze] Clicking breadcrumb:', accumulatedPath);
+                            handleBreadcrumbClick(accumulatedPath);
+                          }}
                           className={`font-mono text-xs truncate max-w-[150px] text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer`}
                           title={accumulatedPath}
                         >
