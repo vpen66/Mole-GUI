@@ -1,7 +1,7 @@
 {
   "productName": "Mole",
   "version": "1.0.0",
-  "identifier": "com.tw93.mole-gui",
+  "identifier": "com.vpen.tauri-gui",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

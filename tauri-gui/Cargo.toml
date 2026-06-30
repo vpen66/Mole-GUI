@@ -1,5 +1,5 @@
 [package]
-name = "mole-gui"
+name = "tauri-gui"
 version = "1.0.0"
 description = "Mole - macOS Cleanup Toolkit GUI"
 authors = ["tw93"]
