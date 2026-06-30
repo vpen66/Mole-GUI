@@ -8,6 +8,10 @@ interface MolePathConfig {
   resolved_path: string;
 }
 
+interface GuiVersionInfo {
+  version: string;
+}
+
 export function SettingsPage() {
   const { t, locale, setLocale } = useT();
   const [config, setConfig] = useState<MolePathConfig | null>(null);
@@ -20,6 +24,8 @@ export function SettingsPage() {
   const [updatingTouchId, setUpdatingTouchId] = useState(false);
   const [touchIdError, setTouchIdError] = useState("");
   const [hasFDA, setHasFDA] = useState(true);
+  
+  const [guiVersion, setGuiVersion] = useState<string>("");
 
   const loadConfig = useCallback(async () => {
     try {
@@ -28,6 +34,15 @@ export function SettingsPage() {
       setInputPath(cfg.custom_path);
     } catch (err) {
       console.error("Failed to load settings:", err);
+    }
+  }, []);
+
+  const loadGuiVersion = useCallback(async () => {
+    try {
+      const versionInfo = await invoke<GuiVersionInfo>("get_gui_version");
+      setGuiVersion(versionInfo.version);
+    } catch (err) {
+      console.error("Failed to load GUI version:", err);
     }
   }, []);
 
@@ -52,9 +67,10 @@ export function SettingsPage() {
 
   useEffect(() => {
     loadConfig();
+    loadGuiVersion();
     loadTouchIdStatus();
     checkFDA();
-  }, [loadConfig, loadTouchIdStatus, checkFDA]);
+  }, [loadConfig, loadGuiVersion, loadTouchIdStatus, checkFDA]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -301,7 +317,9 @@ export function SettingsPage() {
         <h2 className="text-sm font-medium">{t("settings.about")}</h2>
         <div className="grid grid-cols-2 gap-y-2 text-sm">
           <span className="text-surface-400">Mole GUI</span>
-          <span className="text-surface-200">v1.0.0</span>
+          <span className="text-surface-200">
+            {guiVersion ? `v${guiVersion}` : t("common.loading")}
+          </span>
           <span className="text-surface-400">Mole CLI</span>
           <span className="text-surface-200 font-mono text-xs">
             {config?.resolved_path || t("settings.notFound")}

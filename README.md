@@ -134,6 +134,45 @@ pnpm tauri build
 
 ---
 
+## 📦 版本管理
+
+Mole GUI 使用统一的版本管理机制，确保 Git tag、构建产物文件名和应用内部版本号保持一致。
+
+**核心原则：Git tag 是唯一真实来源（Single Source of Truth）**
+
+### 发布流程
+
+1. **更新版本号**
+   ```bash
+   # 方法一：指定版本号
+   ./scripts/update-version.sh 1.1.0
+   
+   # 方法二：从最新 Git tag 自动提取
+   ./scripts/update-version.sh
+   ```
+
+2. **提交并创建标签**
+   ```bash
+   git add package.json tauri-gui/Cargo.toml tauri-gui/tauri.conf.json
+   git commit -m "chore: bump version to 1.1.0"
+   git tag v1.1.0
+   git push origin main
+   git push origin v1.1.0
+   ```
+
+3. **GitHub Actions 自动构建**
+   
+   推送 `v*` 格式的 tag 后，GitHub Actions 会自动：
+   - 提取版本号并同步所有配置文件
+   - 构建 macOS DMG 和 APP 包
+   - 创建 GitHub Release，附带构建产物
+
+详细文档请查看 [VERSION_MANAGEMENT.md](VERSION_MANAGEMENT.md)。
+
+**快速入门**：查看 [QUICK_VERSION_GUIDE.md](QUICK_VERSION_GUIDE.md) 了解 3 步发布流程。
+
+---
+
 ## 🔧 配置
 
 ### Mole CLI 路径

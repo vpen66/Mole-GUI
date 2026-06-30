@@ -1,6 +1,6 @@
 {
   "productName": "Mole",
-  "version": "1.0.0",
+  "version": "1.0.6",
   "identifier": "com.vpen.tauri-gui",
   "build": {
     "frontendDist": "../dist",

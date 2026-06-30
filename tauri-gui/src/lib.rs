@@ -33,6 +33,7 @@ pub fn run() {
         // 相当于注册 REST 接口，但走的是 IPC 通道而不是 HTTP
         .invoke_handler(tauri::generate_handler![
             get_mole_version,        // 获取 Mole CLI 版本
+            get_gui_version,         // 获取 GUI 应用自身版本
             get_free_space_kb,       // 获取磁盘剩余空间（KB）
             get_system_status,       // 获取系统状态（CPU、内存、磁盘等）
             clean_dry_run,           // 清理预览（不实际删除，只列出会删什么）

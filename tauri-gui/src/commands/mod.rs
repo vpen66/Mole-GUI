@@ -81,6 +81,13 @@ pub struct MoleVersionInfo {
     pub path: String,
 }
 
+/// Mole GUI 版本信息（应用自身的版本）
+#[derive(Serialize)]
+pub struct GuiVersionInfo {
+    /// GUI 应用的版本号（从 Cargo.toml 或 tauri.conf.json 中读取）
+    pub version: String,
+}
+
 /// 清理/卸载/优化等操作的执行结果
 #[derive(Serialize)]
 pub struct CleanResult {
@@ -648,7 +655,7 @@ pub async fn get_mole_version(app: AppHandle) -> Result<MoleVersionInfo, String>
                 path,
             })
         }
-        // 如果获取版本失败（Mole 未安装），返回"未安装"状态而不是错误
+        // 如果获取版本失败（Mole 未安装），返回“未安装”状态而不是错误
         // _（下划线）表示忽略错误值，我们不需要知道具体错误原因
         Err(_) => Ok(MoleVersionInfo {
             version: String::new(), // String::new() 创建空字符串（相当于 Java 的 ""）
@@ -656,6 +663,22 @@ pub async fn get_mole_version(app: AppHandle) -> Result<MoleVersionInfo, String>
             path: String::new(),
         }),
     }
+}
+
+/// 获取 Mole GUI 应用自身的版本信息。
+///
+/// 从 Cargo.toml 或 tauri.conf.json 中读取版本号（由构建脚本动态注入）。
+/// 前端调用：await invoke('get_gui_version')
+/// 返回：GuiVersionInfo 结构体（序列化为 JSON）
+#[tauri::command]
+pub async fn get_gui_version() -> Result<GuiVersionInfo, String> {
+    // env!("CARGO_PKG_VERSION") 是 Rust 编译时宏，会在编译时将 Cargo.toml 中的 version 字段展开为字符串字面量
+    // 这类似于 Java 中的 Maven/Gradle 资源过滤机制，但更简单直接
+    // 由于我们在 CI 中使用 update-version.sh 同步了 Cargo.toml 和 tauri.conf.json 的版本号，
+    // 所以这里读取的就是 Git tag 对应的版本
+    Ok(GuiVersionInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
 
 /// 获取系统磁盘剩余空间（单位：KB）。
