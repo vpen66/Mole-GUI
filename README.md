@@ -2,7 +2,7 @@
 
 > **Mole CLI 的图形化界面** —— 一个基于 Tauri 2 + React 的 macOS 系统清理工具桌面应用
 
-Mole GUI 是 [Mole CLI](https://github.com/nicholasgasior/mole) 的可视化客户端，将命令行清理工具包装成一个现代化的 macOS 桌面应用。用户无需记忆任何命令，即可完成磁盘清理、应用卸载、系统优化等操作。
+Mole GUI 是 [Mole CLI](https://github.com/tw93/Mole) 的可视化客户端，将命令行清理工具包装成一个现代化的 macOS 桌面应用。用户无需记忆任何命令，即可完成磁盘清理、应用卸载、系统优化等操作。
 
 ---
 
