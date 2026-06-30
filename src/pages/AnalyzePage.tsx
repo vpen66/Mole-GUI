@@ -40,7 +40,7 @@ export function AnalyzePage() {
   const summaryRef = useRef({ path: "/", overview: true, totalSize: 0, totalFiles: undefined as number | undefined });
   const scanKeyRef = useRef<string | null>(null);
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const FLUSH_INTERVAL = 120; // ms – flush at most ~8 times/sec
+  const FLUSH_INTERVAL = 500; // ms – flush at most ~2 times/sec to reduce re-renders
 
   const flushToStore = useCallback(() => {
     const key = scanKeyRef.current;
@@ -71,6 +71,7 @@ export function AnalyzePage() {
     const myAbortId = scanAbortRef.current;
 
     const key: string | null = path ?? null;
+    console.log(`[Analyze] scan() called for path="${path ?? '/'}" abortId=${myAbortId}`);
 
     // Update the key ref so flushToStore knows where to write
     scanKeyRef.current = key;
@@ -197,6 +198,9 @@ export function AnalyzePage() {
 
   const handleDrillDown = (entry: AnalyzeEntry) => {
     if (!entry.is_dir) return;
+    console.log(`[Analyze] handleDrillDown -> ${entry.path}, cached=${!!scanStore.getResult(entry.path)}`);
+    // Clear selection when navigating
+    setSelectedPaths(new Set());
     scanStore.pushPath(entry.path);
     // Use cached result if available; only scan if not yet loaded
     if (!scanStore.getResult(entry.path)) {
@@ -206,6 +210,8 @@ export function AnalyzePage() {
 
   // Handle clicking on a breadcrumb path segment
   const handleBreadcrumbClick = (targetPath: string | null) => {
+    // Clear selection when navigating
+    setSelectedPaths(new Set());
     if (targetPath === null) {
       // Go back to overview (root)
       scanStore.clearPaths();
@@ -283,9 +289,19 @@ export function AnalyzePage() {
       ...(result.large_files?.map(f => f.path) ?? []),
     ];
     
-    if (selectedPaths.size === allPaths.length && allPaths.length > 0) {
-      setSelectedPaths(new Set());
+    if (allPaths.length === 0) return;
+
+    // Check if ALL current items are already selected
+    const allSelected = allPaths.every(p => selectedPaths.has(p));
+    if (allSelected) {
+      // Deselect all current items (keep any extras from other dirs)
+      setSelectedPaths(prev => {
+        const next = new Set(prev);
+        for (const p of allPaths) next.delete(p);
+        return next;
+      });
     } else {
+      // Select all current items
       setSelectedPaths(new Set(allPaths));
     }
   };
@@ -337,6 +353,16 @@ export function AnalyzePage() {
     setShowDeleteConfirm(false);
   };
 
+  // Stable callback for select toggle – avoids creating new functions in render
+  const onSelectToggleRef = useRef<Map<string, () => void>>(new Map());
+  const getSelectToggle = useCallback((path: string) => {
+    if (!onSelectToggleRef.current.has(path)) {
+      onSelectToggleRef.current.set(path, () => handleSelectToggle(path));
+    }
+    return onSelectToggleRef.current.get(path)!;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const sortedEntries = useMemo(
     () => result ? [...result.entries].sort((a, b) => b.size - a.size) : [],
     [result?.entries]
@@ -368,14 +394,10 @@ export function AnalyzePage() {
                 // Parse the current path into segments
                 const pathSegments = currentPath.split('/').filter(Boolean);
                 
-                console.log('[Analyze] Rendering breadcrumbs:', { currentPath, pathSegments });
-                
                 return pathSegments.map((segment, index) => {
                   // Build absolute path: join all segments up to and including current one
                   const accumulatedPath = '/' + pathSegments.slice(0, index + 1).join('/');
                   const isLast = index === pathSegments.length - 1;
-                  
-                  console.log(`[Analyze] Segment ${index}:`, { segment, accumulatedPath, isLast });
                   
                   return (
                     <React.Fragment key={accumulatedPath}>
@@ -383,7 +405,6 @@ export function AnalyzePage() {
                       {!isLast ? (
                         <button
                           onClick={() => {
-                            console.log('[Analyze] Clicking breadcrumb:', accumulatedPath);
                             handleBreadcrumbClick(accumulatedPath);
                           }}
                           className={`font-mono text-xs truncate max-w-[150px] text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer`}
@@ -437,7 +458,13 @@ export function AnalyzePage() {
                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-surface-800 border border-surface-700 rounded-lg hover:bg-surface-750 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <CheckCircle size={14} />
-                {selectedPaths.size === (result.entries.length + (result.large_files?.length ?? 0)) ? t("analyze.deselectAll") : t("analyze.selectAll")}
+                {(() => {
+                  const totalItems = result.entries.length + (result.large_files?.length ?? 0);
+                  if (totalItems === 0) return null;
+                  const allSelected = result.entries.every(e => selectedPaths.has(e.path)) &&
+                    (result.large_files ?? []).every(f => selectedPaths.has(f.path));
+                  return allSelected ? t("analyze.deselectAll") : t("analyze.selectAll");
+                })()}
               </button>
             )}
             
@@ -551,7 +578,7 @@ export function AnalyzePage() {
                 maxSize={maxSize}
                 onDrillDown={handleDrillDown}
                 isSelected={selectedPaths.has(entry.path)}
-                onSelectToggle={() => handleSelectToggle(entry.path)}
+                onSelectToggle={getSelectToggle(entry.path)}
               />
             ))}
           </div>
@@ -571,7 +598,7 @@ export function AnalyzePage() {
                       key={file.path}
                       file={file}
                       isSelected={selectedPaths.has(file.path)}
-                      onSelectToggle={() => handleSelectToggle(file.path)}
+                      onSelectToggle={getSelectToggle(file.path)}
                     />
                   ))}
               </div>
@@ -583,7 +610,7 @@ export function AnalyzePage() {
   );
 }
 
-function EntryRow({
+const EntryRow = React.memo(function EntryRow({
   entry,
   maxSize,
   onDrillDown,
@@ -675,9 +702,9 @@ function EntryRow({
       </div>
     </div>
   );
-}
+});
 
-function LargeFileRow({
+const LargeFileRow = React.memo(function LargeFileRow({
   file,
   isSelected = false,
   onSelectToggle,
@@ -717,4 +744,4 @@ function LargeFileRow({
       </span>
     </div>
   );
-}
+});

@@ -115,7 +115,9 @@ export const zh: Dictionary = {
   "optimize.status": "状态",
   "optimize.healthy": "健康",
   "optimize.startScan": "开始扫描",
+  "optimize.scanning": "扫描中...",
   "optimize.scanningInBackground": "后台扫描中...",
+  "optimize.noOptimizations": "没有发现可优化的项目",
 
   // ─ 分析 ──
   "analyze.title": "磁盘分析",

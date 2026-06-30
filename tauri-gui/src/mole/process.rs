@@ -38,6 +38,10 @@ fn drain_stderr(child: &mut tokio::process::Child) {
 static ANALYZE_TASK: Mutex<Option<u64>> = Mutex::new(None);
 static NEXT_REQUEST_ID: Mutex<u64> = Mutex::new(0);
 
+/// Track the PID of the running analyze child process so we can kill it
+/// when a new analyze_scan is started.
+static ANALYZE_CHILD_PID: Mutex<Option<u32>> = Mutex::new(None);
+
 /// Result of a streaming execution that may have timed out or been cancelled.
 pub struct StreamingResult {
     pub exit_code: i32,
@@ -285,6 +289,11 @@ where
         "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
     })?;
 
+    // Kill any previously running analyze process before spawning a new one.
+    // This prevents multiple `mole analyze` processes from running simultaneously,
+    // which would cause CPU to spike (e.g. 200%+).
+    kill_previous_analyze();
+
     let mut child = Command::new(&mole_path)
         .args(args)
         .env("LC_ALL", "C")
@@ -293,6 +302,13 @@ where
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start Mole: {}", e))?;
+
+    // Track this process so it can be killed by the next analyze_scan call.
+    if let Some(pid) = child.id() {
+        if let Ok(mut guard) = ANALYZE_CHILD_PID.lock() {
+            *guard = Some(pid);
+        }
+    }
 
     // Drain stderr in background to prevent pipe buffer blocking
     drain_stderr(&mut child);
@@ -385,6 +401,11 @@ where
         on_batch(&buffer);
     }
 
+    // Clear PID tracking
+    if let Ok(mut guard) = ANALYZE_CHILD_PID.lock() {
+        *guard = None;
+    }
+
     let exit_code = if timed_out {
         -1
     } else {
@@ -400,6 +421,24 @@ where
         timed_out,
         cancelled: false,
     })
+}
+
+/// Kill the previously running analyze process (if any) to prevent
+/// multiple `mole analyze` processes from consuming CPU simultaneously.
+fn kill_previous_analyze() {
+    let pid = if let Ok(mut guard) = ANALYZE_CHILD_PID.lock() {
+        guard.take()
+    } else {
+        None
+    };
+
+    if let Some(pid) = pid {
+        eprintln!("[mole-gui] Killing previous analyze process (PID={})", pid);
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status();
+    }
 }
 
 /// Get a unique request ID for tracking
@@ -445,6 +484,94 @@ fn clear_analyze_task_if_current(request_id: u64) {
             }
         }
     }
+}
+
+/// Execute a Mole CLI command with sudo using osascript (GUI password dialog).
+/// This shows a native macOS password dialog instead of terminal prompt.
+pub async fn run_mole_streaming_with_timeout_sudo<F>(
+    app: Option<&tauri::AppHandle>,
+    args: &[&str],
+    timeout_secs: u64,
+    mut on_line: F,
+) -> Result<StreamingResult, String>
+where
+    F: FnMut(String) + Send + 'static,
+{
+    let mole_path = find_mole_path(app).ok_or_else(|| {
+        "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
+    })?;
+
+    // Build the shell command string with auto-confirm (echo y | ...)
+    // Add --permanent flag to skip macOS Trash and use rm -rf directly
+    let cmd_args = args.join(" ");
+    // Use echo to automatically answer "y" to any prompts
+    let shell_cmd = format!("echo y | \"{}\" {} --permanent", mole_path.display(), cmd_args);
+    
+    // Use osascript to run the command with administrator privileges
+    // This will show a native macOS password dialog
+    let script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+
+    let mut child = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .env("LC_ALL", "C")
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start osascript: {}", e))?;
+
+    // Drain stderr in background to prevent pipe buffer blocking
+    drain_stderr(&mut child);
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+
+    let reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+
+    let timeout_duration = Duration::from_secs(timeout_secs);
+    let mut timed_out = false;
+
+    loop {
+        match tokio::time::timeout(timeout_duration, lines.next_line()).await {
+            Ok(Ok(Some(line))) => {
+                on_line(line);
+            }
+            Ok(Ok(None)) => {
+                break;
+            }
+            Ok(Err(_e)) => {
+                break;
+            }
+            Err(_elapsed) => {
+                timed_out = true;
+                let _ = child.kill().await;
+                break;
+            }
+        }
+    }
+
+    let exit_code = if timed_out {
+        -1
+    } else {
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("Failed to wait for osascript: {}", e))?;
+        status.code().unwrap_or(-1)
+    };
+
+    Ok(StreamingResult {
+        exit_code,
+        timed_out,
+        cancelled: false,
+    })
 }
 
 /// Execute a Mole CLI command and return stdout as a string.

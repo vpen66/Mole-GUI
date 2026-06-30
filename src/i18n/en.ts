@@ -115,7 +115,9 @@ export const en: Dictionary = {
   "optimize.status": "Status",
   "optimize.healthy": "Healthy",
   "optimize.startScan": "Start Scan",
+  "optimize.scanning": "Scanning...",
   "optimize.scanningInBackground": "Scanning in background...",
+  "optimize.noOptimizations": "No optimizations found",
 
   // ── Analyze ──
   "analyze.title": "Disk Analyzer",

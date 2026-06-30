@@ -44,6 +44,37 @@ pub struct CleanResult {
     pub error: Option<String>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct OptimizeItem {
+    pub action: String,
+    pub name: String,
+    pub description: String,
+    pub safe: bool,
+    pub requires_sudo: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct SystemHealth {
+    pub memory_used_gb: f64,
+    pub memory_total_gb: f64,
+    pub disk_used_gb: f64,
+    pub disk_total_gb: f64,
+    pub uptime_days: u64,
+}
+
+#[derive(Serialize)]
+pub struct OptimizeResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_health: Option<SystemHealth>,
+    pub optimizations: Vec<OptimizeItem>,
+    pub total_items: usize,
+    pub applied_count: usize,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppInfo {
     pub name: String,
@@ -281,6 +312,86 @@ fn parse_size_to_kb(size_str: &str) -> Option<f64> {
         Some(num)
     } else {
         None
+    }
+}
+
+/// Parse optimize output from mole CLI and return structured data
+fn parse_optimize_output(output: &str) -> OptimizeResult {
+    let mut optimizations: Vec<OptimizeItem> = Vec::new();
+    
+    // Try to parse as JSON first
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(output.trim()) {
+        if let Some(items) = json.get("optimizations").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(action) = item.get("action").and_then(|v| v.as_str()) {
+                    optimizations.push(OptimizeItem {
+                        action: action.to_string(),
+                        name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        description: item.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        safe: item.get("safe").and_then(|v| v.as_bool()).unwrap_or(true),
+                        requires_sudo: item.get("requires_sudo").and_then(|v| v.as_bool()).unwrap_or(false),
+                        enabled: false,
+                        status: item.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    });
+                }
+            }
+        }
+        
+        let system_health = json.get("system_health").and_then(|h| {
+            Some(SystemHealth {
+                memory_used_gb: h.get("memory_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                memory_total_gb: h.get("memory_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                disk_used_gb: h.get("disk_used_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                disk_total_gb: h.get("disk_total_gb").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                uptime_days: h.get("uptime_days").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        });
+        
+        return OptimizeResult {
+            system_health,
+            optimizations: optimizations.clone(),
+            total_items: optimizations.len(),
+            applied_count: 0,
+        };
+    }
+    
+    // Fallback: parse human-readable format
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_header_line(trimmed) {
+            continue;
+        }
+        
+        // Parse lines like: "→ Action Name Description [sudo]"
+        if trimmed.starts_with("→") || trimmed.starts_with("✓") {
+            let content = trimmed.trim_start_matches("→").trim_start_matches("✓").trim();
+            
+            // Extract action (first word, lowercase, no spaces)
+            let parts: Vec<&str> = content.split_whitespace().collect();
+            if !parts.is_empty() {
+                let action = parts[0].to_lowercase().replace(",", "");
+                let name = parts.iter().skip(1).take(3).copied().collect::<Vec<_>>().join(" ");
+                let description = parts.iter().skip(4).copied().collect::<Vec<_>>().join(" ");
+                let requires_sudo = content.contains("[sudo]") || content.contains("sudo");
+                
+                optimizations.push(OptimizeItem {
+                    action,
+                    name,
+                    description,
+                    safe: true,
+                    requires_sudo,
+                    enabled: false,
+                    status: None,
+                });
+            }
+        }
+    }
+    
+    OptimizeResult {
+        system_health: None,
+        total_items: optimizations.len(),
+        optimizations,
+        applied_count: 0,
     }
 }
 
@@ -557,7 +668,7 @@ pub async fn uninstall_execute(
     let handle = tokio::spawn(async move {
         let lines: Vec<String> = Vec::new();
 
-        let result = process::run_mole_streaming_with_timeout(
+        let result = process::run_mole_streaming_with_timeout_sudo(
             Some(&app_clone),
             &["uninstall", "--targets", &targets_str],
             UNINSTALL_TIMEOUT_SECS,
@@ -678,36 +789,67 @@ pub async fn purge_execute(
 }
 
 #[tauri::command]
-pub async fn optimize_dry_run(app: AppHandle, window: Window) -> Result<String, String> {
+pub async fn optimize_dry_run(app: AppHandle, window: Window) -> Result<OptimizeResult, String> {
     let window_clone = window.clone();
     let app_clone = app.clone();
 
     let handle = tokio::spawn(async move {
+        // First try to get JSON output from mole CLI
+        let json_output = process::run_mole_capture(
+            Some(&app_clone),
+            &["optimize", "--dry-run", "--json"],
+        ).await;
+        
+        if let Ok(output) = json_output {
+            return parse_optimize_output(&output);
+        }
+        
+        // Fallback: use streaming mode and collect output
+        let collected_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let collected_lines_clone = collected_lines.clone();
+        
         let result = process::run_mole_streaming_with_timeout(
             Some(&app_clone),
             &["optimize", "--dry-run"],
             OPTIMIZE_TIMEOUT_SECS,
             move |line| {
                 emit_mole_event(&window_clone, "mole-optimize_dry_run-event", &line);
+                if let Ok(mut lines) = collected_lines_clone.lock() {
+                    lines.push(line.to_string());
+                }
             },
         )
         .await;
 
         match result {
-            Ok(streaming) if streaming.timed_out => {
-                Ok(format!(
-                    "Optimize scan timed out after {}s. Showing partial results.",
-                    OPTIMIZE_TIMEOUT_SECS
-                ))
+            Ok(streaming) => {
+                let output = if let Ok(lines) = collected_lines.lock() {
+                    lines.join("\n")
+                } else {
+                    String::new()
+                };
+                let parsed = parse_optimize_output(&output);
+                
+                if streaming.timed_out {
+                    // Return partial results with a warning
+                    parsed
+                } else {
+                    parsed
+                }
             }
-            Ok(_) => Ok(String::new()),
-            Err(e) => Err(e),
+            Err(_e) => {
+                // On error, return empty result
+                OptimizeResult {
+                    system_health: None,
+                    optimizations: Vec::new(),
+                    total_items: 0,
+                    applied_count: 0,
+                }
+            }
         }
     });
 
-    handle
-        .await
-        .map_err(|e| format!("Task error: {}", e))?
+    handle.await.map_err(|e| format!("Task error: {}", e))
 }
 
 #[tauri::command]
@@ -780,6 +922,8 @@ pub async fn analyze_scan(
 
     // Reset cancel flag before starting a new scan
     CANCEL_ANALYZE.store(false, Ordering::SeqCst);
+
+    eprintln!("[mole-gui] analyze_scan called with path: {:?}", path);
 
     let handle = tokio::spawn(async move {
         let mut args = vec!["analyze", "--json"];

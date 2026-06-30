@@ -46,7 +46,7 @@ function HealthCard({
 
 export function OptimizePage() {
   const { t } = useT();
-  const [health] = useState<SystemHealth | null>(null);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [done, setDone] = useState(false);
   const [enabledActions, setEnabledActions] = useState<Set<string>>(new Set());
@@ -74,6 +74,9 @@ export function OptimizePage() {
     try {
       const result = await invoke<OptimizeResult>("optimize_dry_run");
       setOptimizeItems(result.optimizations);
+      if (result.system_health) {
+        setHealth(result.system_health);
+      }
       setOptimizeStatus("preview");
       setOptimizeScanned(true);
     } catch (err) {
@@ -149,6 +152,16 @@ export function OptimizePage() {
         </div>
       )}
 
+      {/* Scanning state - initial scan in progress */}
+      {status === "scanning" && !scanned && (
+        <div className="py-12 flex flex-col items-center justify-center gap-4">
+          <div className="w-8 h-8 border-4 border-purple-500 border-t-transparent rounded-full animate-spin" />
+          <div className="text-sm text-surface-400">
+            {t("optimize.scanning") || "正在扫描..."}
+          </div>
+        </div>
+      )}
+
       {/* System Health */}
       {health && (
         <div className="grid grid-cols-2 gap-3">
@@ -174,6 +187,15 @@ export function OptimizePage() {
       )}
 
       {/* Optimization items */}
+      {scanned && status !== "scanning" && items.length === 0 && (
+        <div className="py-12 flex flex-col items-center justify-center gap-4">
+          <CheckCircle2 size={48} className="text-surface-500" />
+          <div className="text-sm text-surface-400">
+            {t("optimize.noOptimizations") || "没有发现可优化的项目"}
+          </div>
+        </div>
+      )}
+
       {items.length > 0 && (
         <div className="space-y-2">
           <h2 className="text-sm font-medium text-surface-300">

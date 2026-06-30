@@ -14,6 +14,7 @@ import {
   Square,
   CheckSquare,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import type { AppInfo } from "@/types/uninstall";
 
@@ -40,6 +41,7 @@ export function UninstallPage() {
   } = useTabStore();
 
   const scan = async () => {
+    setDone(false);
     setUninstallStatus("scanning");
     setUninstallError(null);
     setUninstallProgress([]);
@@ -80,11 +82,18 @@ export function UninstallPage() {
   const handleExecute = async () => {
     setConfirmOpen(false);
     const targets = apps.filter((a) => selectedNames.has(a.name)).map((a) => a.name);
+    setUninstallStatus("scanning");
     try {
       await invoke("uninstall_execute", { targets });
+      // Remove uninstalled apps from the list
+      const remaining = apps.filter((a) => !selectedNames.has(a.name));
+      setUninstallApps(remaining);
+      setSelectedNames(new Set());
       setDone(true);
+      setUninstallStatus("preview");
     } catch (err) {
-      console.error(err);
+      setUninstallError(err instanceof Error ? err.message : String(err));
+      setUninstallStatus("preview");
     }
   };
 
@@ -152,6 +161,14 @@ export function UninstallPage() {
                 className="w-full bg-surface-800 border border-surface-600 rounded-lg pl-9 pr-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:outline-none focus:border-mole-600"
               />
             </div>
+            <button
+              onClick={scan}
+              className="flex items-center gap-1.5 text-xs text-surface-400 hover:text-surface-200 transition-colors shrink-0"
+              title={t("common.refresh")}
+            >
+              <RefreshCw size={14} />
+              {t("common.refresh")}
+            </button>
             <button
               onClick={selectAll}
               className="text-xs text-surface-400 hover:text-surface-200 transition-colors shrink-0"
