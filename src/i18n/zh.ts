@@ -68,6 +68,13 @@ export const zh: Dictionary = {
   "clean.confirmMessage": "这将永久删除所选项目。文件会尽可能移至废纸篓。",
   "clean.startScan": "开始扫描",
   "clean.scanningInBackground": "后台扫描中...",
+  "clean.executing": "正在清理...",
+  "clean.executingHint": "请稍候，正在删除选中的文件...",
+  "clean.executeFailed": "清理执行失败",
+  "clean.rescan": "重新扫描",
+  "clean.cleaned": "已清理",
+  "clean.fdaMissingTitle": "完全磁盘访问权限未授予",
+  "clean.fdaMissingDesc": "检测到当前应用未获得系统「完全磁盘访问权限 (Full Disk Access)」，这会导致某些受保护的系统沙盒缓存（如 Media analysis cache）无法被彻底删除。建议您前往：系统设置 -> 隐私与安全性 -> 完全磁盘访问权限，将 Mole 启用并重新扫描。",
 
   // ── 卸载 ──
   "uninstall.title": "卸载应用",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "@/i18n";
@@ -14,6 +14,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  RotateCw,
+  AlertTriangle,
 } from "lucide-react";
 import type { CleanResult } from "@/types/clean";
 
@@ -21,6 +23,20 @@ export function CleanPage() {
   const { t } = useT();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [done, setDone] = useState(false);
+  const [hasFDA, setHasFDA] = useState(true);
+
+  const checkFDA = async () => {
+    try {
+      const status = await invoke<boolean>("check_full_disk_access");
+      setHasFDA(status);
+    } catch (err) {
+      console.error("Failed to check FDA:", err);
+    }
+  };
+
+  useEffect(() => {
+    checkFDA();
+  }, []);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set()
   );
@@ -42,6 +58,8 @@ export function CleanPage() {
   } = useTabStore();
 
   const scan = async () => {
+    setDone(false);
+    checkFDA();
     setCleanStatus("scanning");
     setCleanError(null);
     setCleanProgress([]);
@@ -91,12 +109,62 @@ export function CleanPage() {
 
   const handleExecute = async () => {
     setConfirmOpen(false);
+    setCleanStatus("executing");
+    setCleanError(null);
+
+    // Create a copy of sections to update as progress events arrive
+    const tempSections = JSON.parse(JSON.stringify(sections)) as GroupedSection[];
+
+    const unlisten = await listen<MoleEvent>("mole-clean_execute-event", (event) => {
+      const payload = event.payload;
+      if (payload.type === "progress") {
+        setCleanProgress([payload as any]);
+      } else if (payload.type === "item") {
+        const item = payload as ItemEvent;
+        const sec = tempSections.find((s) => s.name === item.section);
+        if (sec) {
+          const match = sec.items.find(
+            (i) => i.description === item.description || 
+                   i.description + " (empty)" === item.description
+          );
+          if (match) {
+            match.status = item.status;
+            if (item.status === "cleaned") {
+              sec.totalKb = Math.max(0, sec.totalKb - match.size_kb);
+              match.size_kb = 0;
+              match.size_human = "0KB";
+            }
+          }
+        }
+        setCleanSections([...tempSections]);
+      }
+    });
 
     try {
-      await invoke<CleanResult>("clean_execute");
-      setDone(true);
+      const result = await invoke<{ success: boolean; error?: string }>("clean_execute");
+      if (result.success) {
+        setDone(true);
+        // Fallback/Guarantee: Set all sizes to 0 and status to cleaned
+        const finalSections = tempSections.map((sec) => ({
+          ...sec,
+          totalKb: 0,
+          items: sec.items.map((item) => ({
+            ...item,
+            status: "cleaned" as const,
+            size_kb: 0,
+            size_human: "0KB",
+          })),
+        }));
+        setCleanSections(finalSections);
+        setCleanProgress([]);
+      } else {
+        setCleanError(result.error || t("clean.executeFailed"));
+      }
     } catch (err) {
-      console.error(err);
+      setCleanError(err instanceof Error ? err.message : String(err));
+    } finally {
+      unlisten();
+      setCleanStatus("preview");
     }
   };
 
@@ -115,21 +183,65 @@ export function CleanPage() {
             {t("clean.subtitle")}
           </p>
         </div>
-        {status === "preview" && !done && (
-          <button
-            onClick={() => setConfirmOpen(true)}
-            disabled={totalSizeKb === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-mole-600 hover:bg-mole-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            <Play size={14} />
-            {t("clean.execute")}
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {scanned && status !== "scanning" && status !== "executing" && (
+            <button
+              onClick={scan}
+              className="flex items-center gap-2 px-3 py-2 bg-surface-800/80 hover:bg-surface-700 border border-surface-700 hover:border-surface-600 text-surface-200 text-sm font-medium rounded-lg transition-all duration-200 active:scale-95 shadow-sm"
+            >
+              <RotateCw size={14} className="text-surface-400" />
+              {t("clean.rescan")}
+            </button>
+          )}
+
+          {status === "preview" && !done && (
+            <button
+              onClick={() => setConfirmOpen(true)}
+              disabled={totalSizeKb === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-mole-600 hover:bg-mole-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-all duration-200 active:scale-95 shadow-sm"
+            >
+              <Play size={14} />
+              {t("clean.execute")}
+            </button>
+          )}
+          {status === "executing" && (
+            <div className="flex items-center gap-2 text-sm text-mole-400">
+              <div className="w-4 h-4 border-2 border-mole-400 border-t-transparent rounded-full animate-spin" />
+              {t("clean.executing")}
+            </div>
+          )}
+        </div>
       </div>
 
       <ErrorBanner message={error} onDismiss={() => setCleanError(null)} />
 
+      {!hasFDA && (
+        <div className="bg-amber-950/20 border border-amber-800/50 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle size={18} className="text-amber-500 shrink-0 mt-0.5" />
+          <div className="text-xs text-amber-200/90 leading-relaxed">
+            <span className="font-semibold block text-sm text-amber-400 mb-1">
+              {t("clean.fdaMissingTitle")}
+            </span>
+            {t("clean.fdaMissingDesc")}
+          </div>
+        </div>
+      )}
+
       {status === "scanning" && <ProgressBar events={progress} />}
+
+      {status === "executing" && (
+        <div className="bg-surface-800 border border-surface-700 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-5 h-5 border-2 border-mole-400 border-t-transparent rounded-full animate-spin shrink-0" />
+          <div>
+            <div className="text-sm font-medium text-mole-300">
+              {t("clean.executing")}
+            </div>
+            <div className="text-xs text-surface-400 mt-0.5">
+              {t("clean.executingHint")}
+            </div>
+          </div>
+        </div>
+      )}
 
       {done && (
         <div className="bg-mole-950/40 border border-mole-800/50 rounded-xl p-4 flex items-center gap-3">
@@ -214,7 +326,11 @@ export function CleanPage() {
                       key={idx}
                       className="flex items-center justify-between px-8 py-2 text-xs"
                     >
-                      <span className="text-surface-300 truncate flex-1">
+                      <span className={`truncate flex-1 ${
+                        item.status === "cleaned" 
+                          ? "text-surface-500 line-through" 
+                          : "text-surface-300"
+                      }`}>
                         {item.description}
                       </span>
                       <div className="flex items-center gap-2 ml-3 shrink-0">
@@ -224,6 +340,11 @@ export function CleanPage() {
                         {item.status === "dry_run" && (
                           <span className="text-yellow-400 text-[10px] uppercase font-medium">
                             dry
+                          </span>
+                        )}
+                        {item.status === "cleaned" && (
+                          <span className="text-green-400 text-[10px] uppercase font-medium">
+                            {t("clean.cleaned")}
                           </span>
                         )}
                       </div>

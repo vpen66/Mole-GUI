@@ -53,6 +53,7 @@ pub fn run() {
             stop_sudo_session,       // 停止/失效 sudo 会话
             get_mole_path_config,    // 获取 Mole CLI 的路径配置
             set_mole_path_config,    // 设置 Mole CLI 的自定义路径
+            check_full_disk_access,  // 检查完全磁盘访问权限 (FDA)
         ])
         // 应用初始化回调：在应用窗口创建之前执行的设置逻辑
         // |app| 是一个闭包（相当于 Java 的 Lambda 或匿名内部类），app 是 Tauri 应用实例

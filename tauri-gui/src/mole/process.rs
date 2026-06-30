@@ -356,6 +356,9 @@ where
         .args(args)
         .env("LC_ALL", "C")
         .env("NO_COLOR", "1")
+        // 设置环境变量 MOLE_TIMEOUT_HINT_SCAN_SEC 为 2 秒，限制项目构建产物扫描的耗时
+        // 这样可以避免每次扫描都卡顿 15+ 秒，大幅提升系统清理页面的响应速度
+        .env("MOLE_TIMEOUT_HINT_SCAN_SEC", "2")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -816,6 +819,7 @@ pub async fn run_mole_capture(
             .args(args)
             .env("LC_ALL", "C")
             .env("NO_COLOR", "1")
+            .env("MOLE_TIMEOUT_HINT_SCAN_SEC", "2")
             .output(), // output() 收集 stdout + stderr + 退出状态（不是流式的）
     )
     .await

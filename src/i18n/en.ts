@@ -68,6 +68,13 @@ export const en: Dictionary = {
   "clean.confirmMessage": "This will permanently delete the selected items. Files will be moved to Trash where possible.",
   "clean.startScan": "Start Scan",
   "clean.scanningInBackground": "Scanning in background...",
+  "clean.executing": "Cleaning...",
+  "clean.executingHint": "Please wait, removing selected files...",
+  "clean.executeFailed": "Cleanup execution failed",
+  "clean.rescan": "Rescan",
+  "clean.cleaned": "Cleaned",
+  "clean.fdaMissingTitle": "Full Disk Access Not Granted",
+  "clean.fdaMissingDesc": "The application lacks 'Full Disk Access' permissions, which prevents it from cleaning protected sandbox directories (such as Media analysis cache). Please go to System Settings -> Privacy & Security -> Full Disk Access, enable Mole, and scan again.",
 
   // ── Uninstall ──
   "uninstall.title": "Uninstall Apps",

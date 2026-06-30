@@ -466,11 +466,13 @@ fn parse_item_line(line: &str, default_section: &str) -> Option<ParsedItem> {
         // 将大小字符串转换为 KB 数值
         let size_kb = parse_size_to_kb(size_str)?;
 
-        // 根据行内容判断状态
+        // 根据行内容判断状态（面向 Java 开发者）：
+        //   - contains 用于检查字符串是否包含特定字串，相当于 Java 的 String.contains()
+        //   - Rust 中 '✓' 是字符型（char），而 "✓" 是字符串型（&str）
         let status = if line.contains("dry") {
             "dry_run"   // 预览模式，文件未被删除
-        } else if line.contains("cleaned") {
-            "cleaned"   // 已经清理（删除）
+        } else if line.contains("cleaned") || line.contains('✓') || line.contains("✓") {
+            "cleaned"   // 已经清理（删除）或者包含成功勾选标记
         } else {
             "skipped"   // 跳过（如文件被占用）
         };
@@ -707,6 +709,36 @@ pub async fn get_free_space_kb(app: AppHandle) -> Result<u64, String> {
     }
     Err("Could not determine free space".to_string())
 }
+
+/// 检查当前应用（Mole GUI）是否已被授予 macOS 的「完全磁盘访问权限 (Full Disk Access)」。
+///
+/// 检查原理：尝试读取受系统保护的 `~/Library/Safari` 目录。
+/// 如果没有授予 FDA，系统会返回 `PermissionDenied` 错误。
+///
+/// 返回：bool，true 表示已授予 FDA（或无需检测），false 表示未授予
+#[tauri::command]
+pub fn check_full_disk_access() -> bool {
+    // std::env::var("HOME") 获取当前用户的 Home 目录路径（相当于 Java 的 System.getProperty("user.home")）
+    // Ok/Err 是 Result 枚举变体，类似 Java 的 Optional
+    let home = match std::env::var("HOME") {
+        Ok(val) => val,
+        Err(_) => return true, // 如果获取失败，默认为 true 避免报错
+    };
+
+    // std::path::Path::new 创建路径对象，.join 连接子目录（相当于 Java 的 Paths.get(home, "Library/Safari")）
+    let safari_dir = std::path::Path::new(&home).join("Library/Safari");
+
+    // exists() 检查该路径在磁盘上是否存在（相当于 Java 的 file.exists()）
+    if safari_dir.exists() {
+        // std::fs::read_dir 尝试读取目录下的文件列表（相当于 Java 的 file.listFiles()）
+        // is_ok() 检查结果是否是 Ok（即成功读取，无权限拒绝等报错，如果没有 FDA 则会 PermissionDenied）
+        std::fs::read_dir(safari_dir).is_ok()
+    } else {
+        // 如果 Safari 目录不存在，默认返回 true 避免误报
+        true
+    }
+}
+
 
 /// 获取完整的系统状态信息（CPU、内存、磁盘、硬件信息等）。
 ///
