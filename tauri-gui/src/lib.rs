@@ -38,6 +38,7 @@ pub fn run() {
             clean_dry_run,           // 清理预览（不实际删除，只列出会删什么）
             clean_execute,           // 执行实际清理
             uninstall_scan_apps,     // 扫描可卸载的应用
+            uninstall_preview,       // 预览卸载（新增）
             uninstall_execute,       // 执行卸载
             purge_dry_run,           // 深度清理预览
             purge_execute,           // 执行深度清理

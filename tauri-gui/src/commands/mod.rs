@@ -1594,3 +1594,235 @@ pub async fn set_mole_path_config(app: AppHandle, path: String) -> Result<MolePa
         resolved_path,
     })
 }
+
+/// 卸载关联文件的信息
+/// #[derive(...)] 是 Rust 中的派生宏，自动实现特定 trait：
+///   Serialize — 自动序列化为 JSON，以便前端 JavaScript 接收
+///   Clone — 允许进行深复制（类似 Java 中的 clone()）
+///   Debug — 允许使用 {:?} 进行格式化打印，用于开发调试
+#[derive(Serialize, Clone, Debug)]
+pub struct UninstallFileItem {
+    /// 关联文件或目录的绝对路径，例如 "/Users/xxx/Library/Caches/..."
+    pub path: String,
+    /// 关联文件或目录的大小（单位：KB）
+    pub size_kb: u64,
+}
+
+/// 单个应用的卸载预览计划（整合了应用主路径及各种残留/关联文件）
+#[derive(Serialize, Clone, Debug)]
+pub struct UninstallPreviewApp {
+    /// 应用程序在系统中的显示名称，例如 "Slack"
+    pub app_name: String,
+    /// 应用程序本身的安装路径，例如 "/Applications/Slack.app"
+    pub app_path: String,
+    /// 用户私有的关联文件列表（如 Caches、Application Support、Preferences 等）
+    pub user_files: Vec<UninstallFileItem>,
+    /// 系统全局 of 关联文件列表（通常需要 sudo 权限才能写入/删除，如 /Library/LaunchDaemons 中的服务描述文件）
+    pub system_files: Vec<UninstallFileItem>,
+    /// 仅供审查查看的关联路径列表（受系统保护或仅用于展示提示，不会在当前阶段执行删除）
+    pub review_only_files: Vec<UninstallFileItem>,
+    /// 当前应用预计删除的文件总大小（单位：KB）
+    pub total_size_kb: u64,
+}
+
+/// 整个卸载操作的预览结果摘要（会被序列化并直接返回给前端）
+#[derive(Serialize, Clone, Debug)]
+pub struct UninstallPreviewResult {
+    /// 用户选定的待卸载应用的目标名称列表，例如 ["Slack", "Zoom"]
+    pub targets: Vec<String>,
+    /// 每个选定应用的详细卸载与残留文件清除计划
+    pub removal_plan: Vec<UninstallPreviewApp>,
+    /// 所有待卸载文件预计释放的总大小（单位：KB）
+    pub total_size_kb: u64,
+    /// 是否需要使用系统管理员（Sudo）权限（当存在 system_files 时为 true，提示前端在确认时触发密码对话框）
+    pub requires_sudo: bool,
+}
+
+/// 预览应用卸载计划，扫描出要卸载的关联文件但不会实际执行删除。
+///
+/// 参数：
+///   app — Tauri 应用句柄（类似于 Java 中的 ApplicationContext，用于寻找 Mole CLI 路径配置）
+///   targets — 要卸载的应用程序名称列表（对应前端传入 of targets 数组）
+/// 返回：
+///   Result<UninstallPreviewResult, String> — 成功时返回卸载预览计划，失败时返回错误描述字符串。
+///   Result<T, E> 类比于 Java 中带有 Checked Exception 的返回值，
+///   Ok(T) 相当于正常返回结果，Err(E) 相当于抛出异常。
+#[tauri::command]
+pub async fn uninstall_preview(
+    app: AppHandle,
+    targets: Vec<String>,
+) -> Result<UninstallPreviewResult, String> {
+    // .clone() 复制 AppHandle（因为要在异步闭包中 move 所有权）
+    // AppHandle 内部是由 Arc（引用计数指针）包装的，clone 只是增加计数，性能开销极小
+    let app_clone = app.clone();
+    
+    // 参数验证，如果传入的目标应用列表为空，立即抛出错误（类似 Java 抛出 IllegalArgumentException）
+    if targets.is_empty() {
+        return Err("No targets specified for preview".to_string());
+    }
+
+    // 将应用名称列表使用 | 连接成单个字符串（Mole CLI 参数格式要求，如 "Slack|Zoom"）
+    let targets_str = targets.join("|");
+
+    // tokio::spawn 在 Tokio 异步运行时中启动一个新的异步任务（Java 中的多线程）
+    // async move 声明这是一个异步闭包，并且 move 会把局部变量（app_clone 等）的所有权转移进闭包内
+    let handle = tokio::spawn(async move {
+        // 查找 Mole CLI 在系统中的可用路径
+        // Some(&app_clone) 将 AppHandle 引用包装在 Option 中
+        // ok_or_else 类似于 Java 的 optional.orElseThrow()，用于在为空时生成一个 Err 结果
+        // ? 语法：如果是 Err 则直接从闭包返回，不再向下执行
+        let mole_path = process::find_mole_path(Some(&app_clone)).ok_or_else(|| {
+            "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
+        })?;
+
+        // 运行 `mole uninstall --json --dry-run --targets "..."` 子进程
+        // tokio::process::Command 类似于 Java 中的 ProcessBuilder
+        // .output() 异步执行子进程，并捕获它的 stdout、stderr 和 status
+        // .await 表示暂停当前协程，等待子进程返回（非阻塞）
+        let output = tokio::process::Command::new(&mole_path)
+            .args(["uninstall", "--json", "--dry-run", "--targets", &targets_str])
+            .env("LC_ALL", "C")
+            .env("NO_COLOR", "1")
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run Mole: {}", e))?;
+
+        // 将子进程的标准错误 stderr 转换为 UTF-8 字符串
+        // 在 json 模式下，Mole CLI 将人可读的流式文件删除预览结果通过 stderr 吐出以保持 stdout 只有 JSON
+        // String::from_utf8_lossy 会把非法字节安全地替换为 unicode 占位符，类似 Java 的 CharsetDecoder.replaceWith
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        
+        // 用于存储解析出的所有应用的删除计划，类似于 Java 的 ArrayList<UninstallPreviewApp>
+        let mut removal_plan = Vec::new();
+        // 追踪当前正在解析的应用程序，Option 类似于 Java 中的 Optional
+        let mut current_app: Option<UninstallPreviewApp> = None;
+        // 统计所有应用需要删除的文件总大小
+        let mut total_size_kb = 0;
+        // 标识是否需要管理员 sudo 权限
+        let mut requires_sudo = false;
+
+        // stderr_str.lines() 获取行的迭代器，类似于 Java 中的 BufferedReader.lines()
+        for line in stderr_str.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // 检查这行是否是一个应用的起始头（例如：◎ PmsetMenu , 3.4MB）
+            // 我们通过它是否以指定的前缀 ◎/✓/✔ 开头、是否包含逗号且不缩进（没有两个前导空格）来判断
+            // !line.starts_with("  ") 类似于 Java 中的 !line.startsWith("  ")
+            if (trimmed.starts_with("◎") || trimmed.starts_with("✓") || trimmed.starts_with("✔"))
+                && trimmed.contains(',')
+                && !line.starts_with("  ")
+            {
+                // 如果在上一个应用未存入 removal_plan 时，current_app 有值，则先推入数组
+                // take() 会取出 Option 中的值，并将 Option 还原为 None（拥有所有权转移，避免 clone()）
+                if let Some(app) = current_app.take() {
+                    removal_plan.push(app);
+                }
+
+                // 剔除前缀 ◎/✓/✔ 等标识符号
+                let cleaned = trimmed
+                    .trim_start_matches('◎')
+                    .trim_start_matches('✓')
+                    .trim_start_matches('✔')
+                    .trim();
+                // 按照逗号分割为应用名和大小描述，例如 ["PmsetMenu", "3.4MB"]
+                let parts: Vec<&str> = cleaned.split(',').collect();
+                let app_name = parts[0].trim().to_string();
+                let app_size_str = if parts.len() > 1 { parts[1].trim() } else { "0KB" };
+                // 调用已有的 parse_size_to_kb 解析大小，转换为 u64 整数
+                let app_size_kb = parse_size_to_kb(app_size_str).unwrap_or(0.0) as u64;
+
+                current_app = Some(UninstallPreviewApp {
+                    app_name,
+                    app_path: String::new(),
+                    user_files: Vec::new(),
+                    system_files: Vec::new(),
+                    review_only_files: Vec::new(),
+                    total_size_kb: app_size_kb,
+                });
+                continue;
+            }
+
+            // 检查这行是否是具体的关联文件条目（有 2 个空格缩进）
+            if line.starts_with("  ") {
+                // 如果当前正在记录某个应用的信息
+                // ref mut app 绑定了 Some 内部的可变借用（类似于 Java 的 app 引用）
+                if let Some(ref mut app) = current_app {
+                    // 剥离符号
+                    let item_line = trimmed
+                        .trim_start_matches('✓')
+                        .trim_start_matches('◎')
+                        .trim_start_matches('✔')
+                        .trim();
+
+                    // 分类文件类别
+                    if item_line.starts_with("System:") {
+                        requires_sudo = true; // 包含系统文件，需要管理员权限
+                        let path_and_size = item_line.trim_start_matches("System:").trim();
+                        let (path, size) = parse_path_and_size(path_and_size);
+                        app.system_files.push(UninstallFileItem { path, size_kb: size });
+                    } else if item_line.starts_with("Review only:") {
+                        let path_and_size = item_line.trim_start_matches("Review only:").trim();
+                        let (path, size) = parse_path_and_size(path_and_size);
+                        app.review_only_files.push(UninstallFileItem { path, size_kb: size });
+                    } else {
+                        let (path, size) = parse_path_and_size(item_line);
+                        // 若 app_path 为空，且此项以 ".app" 结尾，可断定这就是应用主程序路径
+                        if app.app_path.is_empty() && path.ends_with(".app") {
+                            app.app_path = path.clone();
+                        }
+                        app.user_files.push(UninstallFileItem { path, size_kb: size });
+                    }
+                }
+            }
+        }
+
+        // 把循环结束后最后一个正在记录的应用也放进 removal_plan 列表中
+        if let Some(app) = current_app {
+            removal_plan.push(app);
+        }
+
+        // 累加总大小
+        for app in &removal_plan {
+            total_size_kb += app.total_size_kb;
+        }
+
+        // 返回整合好的最终结果
+        Ok(UninstallPreviewResult {
+            targets,
+            removal_plan,
+            total_size_kb,
+            requires_sudo,
+        })
+    });
+
+    // handle.await 可能会有 JoinError 发生（比如子线程崩溃/被强杀，相当于 Java 的 ExecutionException）
+    // ? 将错误向外层传播解包
+    handle.await.map_err(|e| format!("Task error: {}", e))?
+}
+
+/// 辅助函数：从预览文件行中分离路径与可能携带的文件大小后缀。
+///
+/// 参数：
+///   line — 包含路径与可能的大小后缀的字符串（例如："/Applications/PmsetMenu.app , 3.3MB"）
+/// 返回：
+///   (String, u64) — 元组类型（Tuple），第一部分为解析后的路径，第二部分为大小（KB）
+fn parse_path_and_size(line: &str) -> (String, u64) {
+    // 如果行中包含逗号，说明末尾有大小规格，需要进行切割
+    if line.contains(',') {
+        let parts: Vec<&str> = line.split(',').collect();
+        // 最后一个元素代表大小，例如 "3.3MB"
+        let size_str = parts[parts.len() - 1].trim();
+        // 前面的所有元素以逗号拼接回原样，以防路径中本身含有逗号
+        let path_parts = &parts[0..parts.len() - 1];
+        let path = path_parts.join(",").trim().to_string();
+        // 转换为 KB 大小数值，默认值为 0.0
+        let size_kb = parse_size_to_kb(size_str).unwrap_or(0.0) as u64;
+        (path, size_kb)
+    } else {
+        // 如果没有逗号，说明没有大小信息，默认为 0
+        (line.trim().to_string(), 0)
+    }
+}

@@ -84,6 +84,12 @@ export const en: Dictionary = {
   "uninstall.running": "running",
   "uninstall.startScan": "Start Scan",
   "uninstall.scanningInBackground": "Scanning in background...",
+  "uninstall.filesToBeRemoved": "Files to be removed:",
+  "uninstall.systemFiles": "System Files",
+  "uninstall.reviewOnlyFiles": "Review-only Files",
+  "uninstall.scanningLeftovers": "Scanning for leftovers...",
+  "uninstall.backToSelection": "Back to Selection",
+  "uninstall.previewTitle": "Uninstall Preview",
 
   // ── Purge ──
   "purge.title": "Purge Project Artifacts",

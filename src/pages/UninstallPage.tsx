@@ -16,7 +16,7 @@ import {
   AlertTriangle,
   RefreshCw,
 } from "lucide-react";
-import type { AppInfo } from "@/types/uninstall";
+import type { AppInfo, UninstallPreviewResult } from "@/types/uninstall";
 
 export function UninstallPage() {
   const { t } = useT();
@@ -24,6 +24,7 @@ export function UninstallPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [done, setDone] = useState(false);
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const [previewData, setPreviewData] = useState<UninstallPreviewResult | null>(null);
 
   const {
     status,
@@ -79,30 +80,68 @@ export function UninstallPage() {
     selected: selectedNames.has(a.name),
   }));
 
-  const handleExecute = async () => {
-    setConfirmOpen(false);
+  const handleShowPreview = async () => {
     const targets = apps.filter((a) => selectedNames.has(a.name)).map((a) => a.name);
+    if (targets.length === 0) return;
+
     setUninstallStatus("scanning");
+    setUninstallError(null);
+    setUninstallProgress([
+      {
+        type: "progress",
+        section: "uninstall",
+        message: t("uninstall.scanningLeftovers"),
+      },
+    ]);
+
     try {
-      await invoke("uninstall_execute", { targets });
-      // Remove uninstalled apps from the list
-      const remaining = apps.filter((a) => !selectedNames.has(a.name));
-      setUninstallApps(remaining);
-      setSelectedNames(new Set());
-      setDone(true);
-      setUninstallStatus("preview");
+      const result = await invoke<UninstallPreviewResult>("uninstall_preview", { targets });
+      setPreviewData(result);
+      setUninstallStatus("confirming");
     } catch (err) {
       setUninstallError(err instanceof Error ? err.message : String(err));
       setUninstallStatus("preview");
     }
   };
 
+  const handleBackToSelection = () => {
+    setPreviewData(null);
+    setUninstallStatus("preview");
+  };
+
+  const handleExecute = async () => {
+    if (!previewData) return;
+    setConfirmOpen(false);
+    setUninstallStatus("scanning");
+    setUninstallProgress([
+      {
+        type: "progress",
+        section: "uninstall",
+        message: t("common.deleting"),
+      },
+    ]);
+
+    try {
+      await invoke("uninstall_execute", { targets: previewData.targets });
+      // Remove uninstalled apps from the list
+      const remaining = apps.filter((a) => !selectedNames.has(a.name));
+      setUninstallApps(remaining);
+      setSelectedNames(new Set());
+      setPreviewData(null);
+      setDone(true);
+      setUninstallStatus("preview");
+    } catch (err) {
+      setUninstallError(err instanceof Error ? err.message : String(err));
+      setUninstallStatus("confirming");
+    }
+  };
+
   const selectedApps = apps.filter((a) => selectedNames.has(a.name));
   const selectedSizeKb = selectedApps.reduce((sum, a) => sum + a.size_kb, 0);
 
-  const filteredApps = appsWithSelection.filter((a) =>
-    a.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredApps = appsWithSelection
+    .filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="p-8 max-w-3xl space-y-6">
@@ -234,7 +273,7 @@ export function UninstallPage() {
                 </span>
               </div>
               <button
-                onClick={() => setConfirmOpen(true)}
+                onClick={handleShowPreview}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
               >
                 <Play size={14} />
@@ -243,6 +282,143 @@ export function UninstallPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Scanned files preview page */}
+      {status === "confirming" && previewData && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between border-b border-surface-700 pb-2">
+            <div>
+              <h2 className="text-sm font-semibold text-surface-200">
+                {t("uninstall.previewTitle")}
+              </h2>
+              <p className="text-xs text-surface-450 mt-0.5 font-sans">
+                {t("uninstall.filesToBeRemoved")}
+              </p>
+            </div>
+            <button
+              onClick={handleBackToSelection}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              {t("uninstall.backToSelection")}
+            </button>
+          </div>
+
+          <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
+            {previewData.removal_plan.map((app) => (
+              <div
+                key={app.app_name}
+                className="bg-surface-800 border border-surface-700 rounded-lg p-3 space-y-2"
+              >
+                <div className="flex justify-between items-center border-b border-surface-750 pb-1.5">
+                  <span className="text-xs font-semibold text-surface-200 truncate flex-1 pr-4">
+                    {app.app_name}
+                  </span>
+                  <span className="text-[11px] text-mole-400 font-medium shrink-0">
+                    {formatSize(app.total_size_kb)}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-[11px] leading-relaxed max-h-[140px] overflow-y-auto pr-1 font-mono">
+                  {/* App Path */}
+                  {app.app_path && (
+                    <div className="flex items-start gap-2 text-surface-300">
+                      <span className="text-green-400 shrink-0 select-none">✓</span>
+                      <span className="break-all">{app.app_path}</span>
+                    </div>
+                  )}
+
+                  {/* User Files */}
+                  {app.user_files.map((file, idx) => (
+                    <div key={idx} className="flex items-start justify-between gap-3 text-surface-450 pl-3">
+                      <div className="flex items-start gap-2">
+                        <span className="text-green-500 shrink-0 select-none">✓</span>
+                        <span className="break-all">{file.path}</span>
+                      </div>
+                      {file.size_kb > 0 && (
+                        <span className="text-surface-600 shrink-0 select-none">
+                          {formatSize(file.size_kb)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* System Files */}
+                  {app.system_files.map((file, idx) => (
+                    <div key={idx} className="flex items-start justify-between gap-3 text-amber-500/90 pl-3">
+                      <div className="flex items-start gap-2">
+                        <span className="text-amber-500 shrink-0 select-none">⚠</span>
+                        <span className="break-all">
+                          [{t("uninstall.systemFiles")}] {file.path}
+                        </span>
+                      </div>
+                      {file.size_kb > 0 && (
+                        <span className="text-surface-600 shrink-0 select-none">
+                          {formatSize(file.size_kb)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Review Only Files */}
+                  {app.review_only_files.map((file, idx) => (
+                    <div key={idx} className="flex items-start justify-between gap-3 text-surface-500 pl-3">
+                      <div className="flex items-start gap-2">
+                        <span className="text-surface-500 shrink-0 select-none">☞</span>
+                        <span className="break-all">
+                          [{t("uninstall.reviewOnlyFiles")}] {file.path}
+                        </span>
+                      </div>
+                      {file.size_kb > 0 && (
+                        <span className="text-surface-600 shrink-0 select-none">
+                          {formatSize(file.size_kb)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Sudo warning banner */}
+          {previewData.requires_sudo && (
+            <div className="flex items-start gap-2 text-yellow-400 bg-yellow-950/20 border border-yellow-800/40 rounded-lg p-3">
+              <span className="shrink-0 text-sm">⚠</span>
+              <span className="text-xs">
+                {t("dialog.sudoWarning")}
+              </span>
+            </div>
+          )}
+
+          {/* Execution action bar */}
+          <div className="flex items-center justify-between bg-surface-800 border border-surface-600 rounded-xl p-4">
+            <div className="text-sm">
+              <span className="text-surface-400">{t("common.selected")} </span>
+              <span className="font-medium">
+                {t("uninstall.selectedApps", {
+                  count: previewData.removal_plan.length,
+                  size: formatSize(previewData.total_size_kb),
+                })}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleBackToSelection}
+                className="px-4 py-2 border border-surface-600 hover:bg-surface-700 text-surface-300 text-sm font-medium rounded-lg transition-colors"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={() => setConfirmOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                <Play size={14} />
+                {t("uninstall.button")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {done && (
@@ -257,9 +433,10 @@ export function UninstallPage() {
       <ConfirmDialog
         open={confirmOpen}
         title={t("uninstall.confirmTitle")}
-        message={t("uninstall.confirmMessage", { count: selectedApps.length })}
-        totalSizeKb={selectedSizeKb}
-        totalItems={selectedApps.length}
+        message={t("uninstall.confirmMessage", { count: previewData?.removal_plan.length || selectedApps.length })}
+        totalSizeKb={previewData?.total_size_kb || selectedSizeKb}
+        totalItems={previewData?.removal_plan.length || selectedApps.length}
+        requiresSudo={previewData?.requires_sudo}
         onConfirm={handleExecute}
         onCancel={() => setConfirmOpen(false)}
       />

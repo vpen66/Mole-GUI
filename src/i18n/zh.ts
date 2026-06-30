@@ -84,6 +84,12 @@ export const zh: Dictionary = {
   "uninstall.running": "运行中",
   "uninstall.startScan": "开始扫描",
   "uninstall.scanningInBackground": "后台扫描中...",
+  "uninstall.filesToBeRemoved": "将要删除的文件：",
+  "uninstall.systemFiles": "系统文件",
+  "uninstall.reviewOnlyFiles": "仅供审查的文件",
+  "uninstall.scanningLeftovers": "正在扫描关联文件与残留项...",
+  "uninstall.backToSelection": "返回选择",
+  "uninstall.previewTitle": "卸载文件预览",
 
   // ── 清除 ──
   "purge.title": "清除项目产物",
