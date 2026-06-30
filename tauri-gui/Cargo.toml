@@ -1,6 +1,6 @@
 [package]
 name = "tauri-gui"
-version = "1.0.6"
+version = "1.0.7"
 description = "Mole - macOS Cleanup Toolkit GUI"
 authors = ["tw93"]
 edition = "2021"
