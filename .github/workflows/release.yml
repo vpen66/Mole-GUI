@@ -45,11 +45,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 显式指定 Tauri 配置文件的位置，因为配置文件在子目录中
-          configPath: "tauri-gui/tauri.conf.json"
+          # 显式指定 Tauri 项目的目录位置，因为配置文件在子目录中
+          projectPath: "./tauri-gui"
           # v__VERSION__ 会被自动替换为 tauri.conf.json 中的版本号，例如 v1.0.0
           tagName: v__VERSION__
           releaseName: "Mole v__VERSION__"
           releaseBody: "Mole GUI macOS Desktop App release. Download the DMG or APP package below."
-          releaseDraft: true # 创建为一个草稿 Release，您可以确认后再手动点击发布
+          releaseDraft: false # 直接发布 Release，将打包后的资产直接上传到公开 Release 中
           prerelease: false
