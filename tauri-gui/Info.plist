@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Mole</string>
+    <string>MoleGUI</string>
     <key>CFBundleExecutable</key>
     <string>mole-gui</string>
     <key>CFBundleIdentifier</key>
-    <string>com.tw93.mole-gui</string>
+    <string>com.vpen.mole-gui</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Mole</string>
+    <string>MoleGUI</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -33,7 +33,7 @@
     <key>LSUIElement</key>
     <false/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Mole needs permission to send Apple Events to automate system tasks.</string>
+    <string>Mole GUI needs permission to send Apple Events to automate system tasks.</string>
     <key>NSDesktopFolderUsageDescription</key>
     <string>Mole needs access to the Desktop folder to clean up files.</string>
 </dict>

@@ -67,7 +67,7 @@ jobs:
           projectPath: "./tauri-gui"
           # 使用从 Git tag 提取的版本号
           tagName: ${{ steps.extract_version.outputs.TAG }}
-          releaseName: "Mole ${{ steps.extract_version.outputs.TAG }}"
+          releaseName: "MoleGui ${{ steps.extract_version.outputs.TAG }}"
           releaseBody: "Mole GUI macOS Desktop App release. Download the DMG or APP package below."
           releaseDraft: false # 直接发布 Release，将打包后的资产直接上传到公开 Release 中
           prerelease: false
