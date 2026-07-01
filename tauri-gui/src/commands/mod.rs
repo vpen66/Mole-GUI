@@ -982,6 +982,7 @@ pub async fn uninstall_scan_apps(app: AppHandle, window: Window) -> Result<Vec<A
 
     let window_clone = window.clone();
     let app_clone = app.clone();
+    let use_json = settings::get_use_json_config(&app);
 
     // 创建线程安全的 Vec，在主任务和回调闭包之间共享
     // Arc::new 创建引用计数指针（多个 Arc 可以指向同一个数据）
@@ -991,38 +992,115 @@ pub async fn uninstall_scan_apps(app: AppHandle, window: Window) -> Result<Vec<A
     let apps_clone = apps_arc.clone();
 
     let handle = tokio::spawn(async move {
-        let result = process::run_mole_streaming_with_timeout(
-            Some(&app_clone),
-            &["uninstall", "--json"], // --json 让 mole 以 JSON Lines 格式输出
-            UNINSTALL_TIMEOUT_SECS,
-            move |line| {
-                // 检查这行是否是 JSON 对象（以 { 开头）
-                if line.starts_with("{") {
-                    // 尝试将 JSON 行解析为 AppInfo 结构体
-                    if let Ok(app_info) = serde_json::from_str::<AppInfo>(&line) {
-                        // 获取 Mutex 锁，将解析出的 AppInfo 加入列表
-                        if let Ok(mut apps) = apps_clone.lock() {
-                            apps.push(app_info);
+        if use_json {
+            let result = process::run_mole_streaming_with_timeout(
+                Some(&app_clone),
+                &["uninstall", "--json"], // --json 让 mole 以 JSON Lines 格式输出
+                UNINSTALL_TIMEOUT_SECS,
+                move |line| {
+                    // 检查这行是否是 JSON 对象（以 { 开头）
+                    if line.starts_with("{") {
+                        // 尝试将 JSON 行解析为 AppInfo 结构体
+                        if let Ok(app_info) = serde_json::from_str::<AppInfo>(&line) {
+                            // 获取 Mutex 锁，将解析出的 AppInfo 加入列表
+                            if let Ok(mut apps) = apps_clone.lock() {
+                                apps.push(app_info);
+                            }
+                        }
+                    } else {
+                        // 非 JSON 行（如进度信息），通过事件发送给前端显示
+                        emit_mole_event(&window_clone, "mole-uninstall_scan_apps-event", &line);
+                    }
+                },
+            )
+            .await;
+
+            match result {
+                Ok(_) => {
+                    // 获取最终的应用列表
+                    // unwrap_or_else(|e| e.into_inner()) 处理 Mutex "中毒"的情况
+                    // Mutex 中毒：如果持有锁的线程 panic，Mutex 变为"中毒"状态
+                    // into_inner() 从中毒的 MutexGuard 中恢复数据（Java 中没有对应概念）
+                    let apps = apps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    Ok(apps)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            // 官方原版模式：运行 uninstall --list
+            // 它是单次输出的完整 JSON 数组，所以将每行缓存到 Buffer
+            let stdout_buffer = Arc::new(Mutex::new(String::new()));
+            let stdout_clone = stdout_buffer.clone();
+
+            let result = process::run_mole_streaming_with_timeout(
+                Some(&app_clone),
+                &["uninstall", "--list"],
+                UNINSTALL_TIMEOUT_SECS,
+                move |line| {
+                    // 非 JSON 标记的数据行发送到前端作为日志进度展示
+                    let trimmed = line.trim();
+                    if !trimmed.starts_with("[") && !trimmed.starts_with("]") && !trimmed.starts_with("{") && !trimmed.starts_with("}") && !trimmed.starts_with(",") {
+                        emit_mole_event(&window_clone, "mole-uninstall_scan_apps-event", &line);
+                    }
+                    if let Ok(mut buffer) = stdout_clone.lock() {
+                        buffer.push_str(&line);
+                        buffer.push('\n');
+                    }
+                },
+            )
+            .await;
+
+            match result {
+                Ok(_) => {
+                    let full_stdout = {
+                        let lock = stdout_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                        lock.clone()
+                    };
+
+                    // 原版 list 输出所对应的应用结构定义
+                    #[allow(dead_code)]
+                    #[derive(serde::Deserialize)]
+                    struct RawApp {
+                        name: String,
+                        bundle_id: String,
+                        source: String,
+                        uninstall_name: String,
+                        path: String,
+                        size: String,
+                    }
+
+                    // 截取 JSON 数组区间，防止调试前缀干扰
+                    let json_start = full_stdout.find('[');
+                    let json_end = full_stdout.rfind(']');
+
+                    if let (Some(start), Some(end)) = (json_start, json_end) {
+                        if start < end {
+                            let json_slice = &full_stdout[start..=end];
+                            if let Ok(raw_apps) = serde_json::from_str::<Vec<RawApp>>(json_slice) {
+                                let mut apps = Vec::new();
+                                for raw in raw_apps {
+                                    // 将人类可读大小（如 152.0 MB）转换为 KB 数字
+                                    let size_kb = parse_size_to_kb(&raw.size).unwrap_or(0.0) as u64;
+                                    let has_brew_cask = raw.source == "Homebrew";
+                                    apps.push(AppInfo {
+                                        name: raw.name,
+                                        path: raw.path,
+                                        bundle_id: raw.bundle_id,
+                                        size_kb,
+                                        is_running: false,
+                                        has_brew_cask,
+                                        is_blocked: false,
+                                        last_used: None,
+                                    });
+                                }
+                                return Ok(apps);
+                            }
                         }
                     }
-                } else {
-                    // 非 JSON 行（如进度信息），通过事件发送给前端显示
-                    emit_mole_event(&window_clone, "mole-uninstall_scan_apps-event", &line);
+                    Err("未检测到有效应用或原版输出解析失败".to_string())
                 }
-            },
-        )
-        .await;
-
-        match result {
-            Ok(_) => {
-                // 获取最终的应用列表
-                // unwrap_or_else(|e| e.into_inner()) 处理 Mutex "中毒"的情况
-                // Mutex 中毒：如果持有锁的线程 panic，Mutex 变为"中毒"状态
-                // into_inner() 从中毒的 MutexGuard 中恢复数据（Java 中没有对应概念）
-                let apps = apps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                Ok(apps)
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
         }
     });
 
@@ -1046,14 +1124,21 @@ pub async fn uninstall_execute(
     let targets_str = targets.join("|");
     let window_clone = window.clone();
     let app_clone = app.clone();
+    let use_json = settings::get_use_json_config(&app);
 
     let handle = tokio::spawn(async move {
         let lines: Vec<String> = Vec::new();
 
+        let args = if use_json {
+            vec!["uninstall", "--json", "--targets", &targets_str]
+        } else {
+            vec!["uninstall", "--targets", &targets_str]
+        };
+
         // 使用 sudo 版本的流式执行（会弹出 macOS 密码对话框）
         let result = process::run_mole_streaming_with_timeout_sudo(
             Some(&app_clone),
-            &["uninstall", "--targets", &targets_str],
+            &args,
             UNINSTALL_TIMEOUT_SECS,
             move |line| {
                 emit_mole_event(&window_clone, "mole-uninstall_execute-event", &line);
@@ -1748,6 +1833,7 @@ pub async fn uninstall_preview(
     // .clone() 复制 AppHandle（因为要在异步闭包中 move 所有权）
     // AppHandle 内部是由 Arc（引用计数指针）包装的，clone 只是增加计数，性能开销极小
     let app_clone = app.clone();
+    let use_json = settings::get_use_json_config(&app);
     
     // 参数验证，如果传入的目标应用列表为空，立即抛出错误（类似 Java 抛出 IllegalArgumentException）
     if targets.is_empty() {
@@ -1768,12 +1854,15 @@ pub async fn uninstall_preview(
             "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
         })?;
 
-        // 运行 `mole uninstall --json --dry-run --targets "..."` 子进程
-        // tokio::process::Command 类似于 Java 中的 ProcessBuilder
-        // .output() 异步执行子进程，并捕获它的 stdout、stderr 和 status
-        // .await 表示暂停当前协程，等待子进程返回（非阻塞）
-        let output = tokio::process::Command::new(&mole_path)
-            .args(["uninstall", "--json", "--dry-run", "--targets", &targets_str])
+        // 运行 `mole uninstall` 子进程，根据模式选择是否传入 --json
+        let mut cmd = tokio::process::Command::new(&mole_path);
+        if use_json {
+            cmd.args(["uninstall", "--json", "--dry-run", "--targets", &targets_str]);
+        } else {
+            cmd.args(["uninstall", "--dry-run", "--targets", &targets_str]);
+        }
+
+        let output = cmd
             .env("LC_ALL", "C")
             .env("NO_COLOR", "1")
             .output()
