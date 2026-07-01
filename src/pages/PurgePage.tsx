@@ -13,11 +13,13 @@ import {
   ChevronDown,
   ChevronRight,
   Package,
+  RotateCcw,
 } from "lucide-react";
 import type { PurgeResult } from "@/types/purge";
 
 export function PurgePage() {
-  const { t } = useT();
+  const { t, locale } = useT();
+  const isZh = locale === "zh";
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [done, setDone] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
@@ -97,14 +99,25 @@ export function PurgePage() {
 
   return (
     <div className="p-8 max-w-3xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold flex items-center gap-2">
-          <FolderOpen size={20} className="text-amber-400" />
-          {t("purge.title")}
-        </h1>
-        <p className="text-sm text-surface-400 mt-1">
-          {t("purge.subtitle")}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold flex items-center gap-2">
+            <FolderOpen size={20} className="text-amber-400" />
+            {t("purge.title")}
+          </h1>
+          <p className="text-sm text-surface-400 mt-1">
+            {t("purge.subtitle")}
+          </p>
+        </div>
+        {scanned && status !== "scanning" && (
+          <button
+            onClick={scan}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-700 hover:border-surface-600 text-surface-300 hover:text-white rounded-lg bg-surface-900 transition-colors shrink-0"
+          >
+            <RotateCcw size={12} />
+            {isZh ? "重新扫描" : "Rescan"}
+          </button>
+        )}
       </div>
 
       <ErrorBanner message={error} onDismiss={() => setPurgeError(null)} />
@@ -239,17 +252,36 @@ export function PurgePage() {
       )}
 
       {status === "preview" && projects.length === 0 && (
-        <div className="text-sm text-surface-400 bg-surface-800 border border-surface-700 rounded-xl p-6 text-center">
-          {t("purge.empty")}
+        <div className="text-sm text-surface-400 bg-surface-800 border border-surface-700 rounded-xl p-8 text-center flex flex-col items-center justify-center gap-4">
+          <div>{t("purge.empty")}</div>
+          <button
+            onClick={scan}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors"
+          >
+            <RotateCcw size={14} />
+            {isZh ? "重新扫描" : "Rescan"}
+          </button>
         </div>
       )}
 
       {done && (
-        <div className="bg-mole-950/40 border border-mole-800/50 rounded-xl p-4 flex items-center gap-3">
-          <CheckCircle2 size={20} className="text-mole-400 shrink-0" />
-          <div className="text-sm text-mole-300">
-            {t("purge.complete")}
+        <div className="flex flex-col gap-4">
+          <div className="bg-mole-950/40 border border-mole-800/50 rounded-xl p-4 flex items-center gap-3">
+            <CheckCircle2 size={20} className="text-mole-400 shrink-0" />
+            <div className="text-sm text-mole-300">
+              {t("purge.complete")}
+            </div>
           </div>
+          <button
+            onClick={() => {
+              setDone(false);
+              scan();
+            }}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors w-max"
+          >
+            <RotateCcw size={14} />
+            {isZh ? "重新扫描" : "Rescan"}
+          </button>
         </div>
       )}
 

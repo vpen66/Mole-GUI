@@ -31,33 +31,106 @@ export function AnalyzePage() {
   const [childrenCache, setChildrenCache] = useState<Record<string, any[]>>({});
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
 
+  // 正在计算/加载中的路径 Set（使用同步 Ref 锁，规避 React 异步批处理渲染导致的 Race Condition 重复拉取问题）
+  const expandingPathsRef = useRef<Set<string>>(new Set());
+
+  // 1. 注册全局子项推送事件监听器，避免在 handleToggleExpand 中动态注册/注销导致的泄漏与竞态
+  useEffect(() => {
+    let active = true;
+    let unlistenFn: (() => void) | null = null;
+
+    const setupListener = async () => {
+      const unlisten = await listen<any>("mole-directory-entry-stream", (event) => {
+        if (!active) return;
+        const payload = event.payload; // { parent_path: string, entry: SimpleEntry }
+        const parentPath = payload.parent_path;
+        const entryPath = payload.entry.path;
+
+        setChildrenCache(prev => {
+          const currentList = prev[parentPath] || [];
+          if (currentList.some(item => item.path === entryPath)) {
+            return prev;
+          }
+          const newList = [...currentList, payload.entry];
+          newList.sort((a, b) => b.size - a.size);
+          return {
+            ...prev,
+            [parentPath]: newList
+          };
+        });
+      });
+
+      if (active) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      active = false;
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
+  }, []);
+
   const handleToggleExpand = useCallback(async (entry: AnalyzeEntry) => {
     const path = entry.path;
-    const isExpanded = expandedPaths.has(path);
     
+    // 如果该目录正在加载计算中，禁止一切折叠/展开操作，防止 Race Condition 重复发起
+    if (loadingPaths.has(path) || expandingPathsRef.current.has(path)) {
+      return;
+    }
+
+    const isExpanded = expandedPaths.has(path);
     const nextExpanded = new Set(expandedPaths);
+    
     if (isExpanded) {
       nextExpanded.delete(path);
       setExpandedPaths(nextExpanded);
+
+      // 同时从加载态中移出，重置子项缓存，确保下一次展开能触发实时重算
+      setLoadingPaths(prev => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+      setChildrenCache(prev => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
     } else {
       nextExpanded.add(path);
       setExpandedPaths(nextExpanded);
       
       // 如果没有拉取过，则进行拉取
       if (!childrenCache[path]) {
+        // 同步加锁
+        expandingPathsRef.current.add(path);
+
         const nextLoading = new Set(loadingPaths);
         nextLoading.add(path);
         setLoadingPaths(nextLoading);
         
+        // 预置空数组，避免无数据或等待时的 undefined 错误
+        setChildrenCache(prev => ({
+          ...prev,
+          [path]: []
+        }));
+
         try {
-          const res = await invoke<any[]>("get_directory_entries", { path });
-          setChildrenCache(prev => ({
-            ...prev,
-            [path]: res
-          }));
+          // 2. 触发后台流式计算进程
+          await invoke("get_directory_entries", { path });
         } catch (err) {
           console.error("Failed to load sub-directory entries:", err);
         } finally {
+          // 解锁
+          expandingPathsRef.current.delete(path);
+
           const finalLoading = new Set(loadingPaths);
           finalLoading.delete(path);
           setLoadingPaths(finalLoading);
@@ -66,7 +139,7 @@ export function AnalyzePage() {
     }
   }, [expandedPaths, childrenCache, loadingPaths]);
 
-  // 当 currentPath 改变时，清空子目录展开状态
+  // 当 currentPath 改变或组件被卸载时，清空子目录展开状态
   useEffect(() => {
     setExpandedPaths(new Set());
     setChildrenCache({});
@@ -652,7 +725,7 @@ export function AnalyzePage() {
           <div className="space-y-1">
             {renderItems.map(({ entry, depth }) => (
               <EntryRow
-                key={entry.path}
+                key={`${depth}-${entry.path}`}
                 entry={entry}
                 depth={depth}
                 maxSize={maxSize}

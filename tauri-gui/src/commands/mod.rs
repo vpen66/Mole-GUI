@@ -1170,38 +1170,150 @@ pub async fn uninstall_execute(
     handle.await.map_err(|e| format!("Task error: {}", e))
 }
 
+/// 深度清理子产物信息（用于清除功能）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PurgeArtifact {
+    /// 产物名（如 "node_modules"）
+    pub name: String,
+    /// 完整路径（如 "/path/to/node_modules"）
+    pub path: String,
+    /// 大小（KB）
+    pub size_kb: u64,
+    /// 人类可读的大小描述（如 "152.0 MB"）
+    pub size_human: String,
+}
+
+/// 深度清理项目信息（用于清除功能）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PurgeProject {
+    /// 项目名（如 "demo"）
+    pub name: String,
+    /// 项目路径（如 "/path/to/demo"）
+    pub path: String,
+    /// 项目内待清理产物总大小（KB）
+    pub total_size_kb: u64,
+    /// 项目关联的待清理产物列表
+    pub artifacts: Vec<PurgeArtifact>,
+}
+
+/// 深度清理干跑预览结果
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PurgeResult {
+    /// 扫描出的待清理项目列表
+    pub projects: Vec<PurgeProject>,
+    /// 所有项目待清理产物预计释放总大小（KB）
+    pub total_size_kb: u64,
+    /// 扫描到的项目总数
+    pub total_projects: u64,
+}
+
 /// 深度清理预览（dry-run）：列出将被深度清理的内容，但不实际删除。
 ///
 /// 运行 `mole purge --dry-run`。
 /// 前端调用：await invoke('purge_dry_run')
 #[tauri::command]
-pub async fn purge_dry_run(app: AppHandle, window: Window) -> Result<String, String> {
+pub async fn purge_dry_run(app: AppHandle, window: Window) -> Result<PurgeResult, String> {
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+
     let window_clone = window.clone();
     let app_clone = app.clone();
 
+    // 创建一个 Buffer 收集全部 stdout 输出行
+    let lines_arc = Arc::new(Mutex::new(Vec::<String>::new()));
+    let lines_clone = lines_arc.clone();
+
     let handle = tokio::spawn(async move {
+        // 不管 use_json 是什么，我们都调用 purge --dry-run 获取纯文本，以便稳定统一解析
+        // 这规避了 CLI 端由于 JSON-Lines 缺失或版本字段不符的风险
         let result = process::run_mole_streaming_with_timeout(
             Some(&app_clone),
             &["purge", "--dry-run"],
             PURGE_TIMEOUT_SECS,
             move |line| {
+                // 实时推送进度文本事件给前端
                 emit_mole_event(&window_clone, "mole-purge_dry_run-event", &line);
+                
+                if let Ok(mut lines) = lines_clone.lock() {
+                    lines.push(line);
+                }
             },
         )
         .await;
 
-        // match result { ... } 匹配执行结果
-        // Ok(streaming) if streaming.timed_out => 带守卫的匹配：
-        //   只有当 streaming.timed_out 为 true 时，这个 arm 才匹配
-        //   if ... 部分叫做"匹配守卫"（match guard）
         match result {
-            Ok(streaming) if streaming.timed_out => {
-                Ok(format!(
-                    "Purge scan timed out after {}s. Showing partial results.",
-                    PURGE_TIMEOUT_SECS
-                ))
+            Ok(_) => {
+                let lines = lines_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                
+                // 项目路径到 PurgeProject 的映射
+                let mut project_map: HashMap<String, PurgeProject> = HashMap::new();
+
+                for line in lines {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // 检索是否是 DRY RUN 条目行，格式如：✔ [DRY RUN] /path/to/project/node_modules, 1.2 GB
+                    if trimmed.contains("[DRY RUN]") && trimmed.contains(',') {
+                        // 寻找 [DRY RUN] 标记之后的位置
+                        if let Some(idx) = trimmed.find("[DRY RUN]") {
+                            let after_tag = &trimmed[idx + "[DRY RUN]".len()..];
+                            let parts: Vec<&str> = after_tag.split(',').collect();
+                            if parts.len() >= 2 {
+                                let artifact_path = parts[0].trim().to_string();
+                                let size_human = parts[1].trim().to_string();
+
+                                // 计算 size_kb
+                                let size_kb = parse_size_to_kb(&size_human).unwrap_or(0.0) as u64;
+
+                                // 剥离出子产物名称和项目路径
+                                let path_buf = std::path::Path::new(&artifact_path);
+                                let artifact_name = path_buf.file_name()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "artifact".to_string());
+
+                                let project_path = path_buf.parent()
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "/".to_string());
+
+                                let project_name = std::path::Path::new(&project_path).file_name()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "project".to_string());
+
+                                let artifact = PurgeArtifact {
+                                    name: artifact_name,
+                                    path: artifact_path,
+                                    size_kb,
+                                    size_human,
+                                };
+
+                                if let Some(proj) = project_map.get_mut(&project_path) {
+                                    proj.total_size_kb += size_kb;
+                                    proj.artifacts.push(artifact);
+                                } else {
+                                    project_map.insert(project_path.clone(), PurgeProject {
+                                        name: project_name,
+                                        path: project_path,
+                                        total_size_kb: size_kb,
+                                        artifacts: vec![artifact],
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let projects: Vec<PurgeProject> = project_map.into_values().collect();
+                let total_size_kb = projects.iter().map(|p| p.total_size_kb).sum();
+                let total_projects = projects.len() as u64;
+
+                Ok(PurgeResult {
+                    projects,
+                    total_size_kb,
+                    total_projects,
+                })
             }
-            Ok(_) => Ok(String::new()), // 正常结束，返回空字符串
             Err(e) => Err(e),
         }
     });
@@ -1224,13 +1336,20 @@ pub async fn purge_execute(
     let targets_str = targets.join("|");
     let window_clone = window.clone();
     let app_clone = app.clone();
+    let use_json = settings::get_use_json_config(&app);
 
     let handle = tokio::spawn(async move {
         let lines: Vec<String> = Vec::new();
 
+        let args = if use_json {
+            vec!["purge", "--json", "--targets", &targets_str]
+        } else {
+            vec!["purge", "--targets", &targets_str]
+        };
+
         let result = process::run_mole_streaming_with_timeout(
             Some(&app_clone),
-            &["purge", "--targets", &targets_str],
+            &args,
             PURGE_TIMEOUT_SECS,
             move |line| {
                 emit_mole_event(&window_clone, "mole-purge_execute-event", &line);
@@ -2356,7 +2475,7 @@ pub fn open_path_in_finder(path: String) -> Result<(), String> {
 ///
 /// 前端调用：await invoke('get_directory_entries', { path: '/Users/xxx/Downloads' })
 /// 返回：Vec<SimpleEntry>（子项列表）
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimpleEntry {
     pub name: String,
     pub path: String,
@@ -2365,13 +2484,13 @@ pub struct SimpleEntry {
     pub insight: bool,
     pub cleanable: bool,
 }
-
 #[tauri::command]
 pub async fn get_directory_entries(
     _app: AppHandle,
+    window: Window,
     path: String,
-) -> Result<Vec<SimpleEntry>, String> {
-    // 安全验证路径
+) -> Result<(), String> {
+    // 安全验证路径。确保传入的路径是合法的绝对路径，防止目录穿越攻击
     validate_path(&path)?;
 
     let root_path = PathBuf::from(&path);
@@ -2379,13 +2498,11 @@ pub async fn get_directory_entries(
         return Err(format!("Path does not exist: {}", path));
     }
 
-    // 读取第一层子项
+    // 读取第一层子项。使用 flatten() 过滤掉读取出错的 Entry（类似于 Java Option.flatMap）
     let mut items = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&root_path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                items.push(entry.path());
-            }
+        for entry in entries.flatten() {
+            items.push(entry.path());
         }
     }
 
@@ -2395,6 +2512,8 @@ pub async fn get_directory_entries(
 
     for p in items {
         let cancel_clone = cancel_flag.clone();
+        let window_clone = window.clone();
+        let parent_path_clone = path.clone();
         let task = tokio::spawn(async move {
             let name = p.file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -2421,29 +2540,39 @@ pub async fn get_directory_entries(
             let path_str = p.to_string_lossy().to_string();
             let is_cleanable = path_str.contains("Cache") || path_str.contains("Logs") || path_str.contains("Tmp") || path_str.contains("Temp");
 
-            SimpleEntry {
+            let entry = SimpleEntry {
                 name,
                 path: path_str,
                 size,
                 is_dir,
                 insight: false,
                 cleanable: is_cleanable,
+            };
+
+            // 实时推送此单条子项至前端
+            #[derive(Clone, serde::Serialize)]
+            struct StreamPayload {
+                parent_path: String,
+                entry: SimpleEntry,
             }
+
+            // 通过 Tauri Window 实例将事件发送给前端（类似于 Java Swing/JavaFX 中的消息广播机制）
+            let _ = window_clone.emit("mole-directory-entry-stream", StreamPayload {
+                parent_path: parent_path_clone,
+                entry: entry.clone(),
+            });
+
+            entry
         });
         tasks.push(task);
     }
 
-    let mut results = Vec::new();
+    // 等待所有异步子任务执行完，使 invoke Await 在全部推送完时自然完结
     for task in tasks {
-        if let Ok(entry) = task.await {
-            results.push(entry);
-        }
+        let _ = task.await;
     }
 
-    // 按照大小降序排列
-    results.sort_by(|a, b| b.size.cmp(&a.size));
-
-    Ok(results)
+    Ok(())
 }
 
 
@@ -2474,7 +2603,8 @@ async fn run_rust_native_scan(
         let app_handle = window.app_handle();
         
         // 从持久化存储中读取自定义/默认的 Overview 概览白名单配置
-        let configured_dirs = settings::get_overview_dirs_config(&app_handle);
+        // app_handle 已经是引用类型，因此不需要额外的 & 符号
+        let configured_dirs = settings::get_overview_dirs_config(app_handle);
 
         struct OverviewItem {
             name: String,
