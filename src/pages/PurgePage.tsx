@@ -77,9 +77,10 @@ export function PurgePage() {
 
   const handleExecute = async () => {
     setConfirmOpen(false);
-    const targets = projects.filter((p) => selectedNames.has(p.name)).map((p) => p.name);
+    // purge_execute 现在直接运行 `mole purge`，不依赖 targets 参数
+    // 传空数组即可，后端已改为忽略 targets
     try {
-      await invoke("purge_execute", { targets });
+      await invoke("purge_execute", { targets: [] });
       setDone(true);
     } catch (err) {
       console.error(err);

@@ -42,10 +42,9 @@ use super::settings;
 // 常量定义
 // ============================================================
 
-/// 空闲超时：如果 Mole 进程在这么多秒内没有输出任何内容，
-/// 则认为它卡住了（可能被 stderr 的管道缓冲区撑满而阻塞），直接杀掉它。
-/// OS 管道缓冲区大约 64KB，如果 stderr 填满而没人读，进程会卡死。
-const IDLE_TIMEOUT_SECS: u64 = 60;
+// 注意：原本设置了空闲超时 IDLE_TIMEOUT_SECS = 60 秒用于杀死卡住的进程，
+// 但在方案 B 下完全去掉了超时限制逻辑，因而此常量不再被使用。
+// const IDLE_TIMEOUT_SECS: u64 = 60;
 
 // ============================================================
 // 辅助函数
@@ -316,18 +315,17 @@ where
     Ok(status.code().unwrap_or(-1))
 }
 
-/// 执行 Mole CLI 命令，带有总体超时控制。
+/// 执行 Mole CLI 命令，逐行流式读取标准输出。
 ///
-/// 如果在 `timeout_secs` 秒内命令未完成，进程会被强制杀死，
-/// 并在返回的 `StreamingResult` 中设置 `timed_out = true`。
-/// 超时前接收到的输出仍然通过回调函数正常传递。
+/// 方案 B 重构说明：已彻底移除原有的 `timeout_secs` 超时限制逻辑。
+/// 此参数目前在函数中被忽略（仅作向后兼容保留），以使扫描任务可以无限期运行直至完成。
 ///
 /// 此函数还支持 analyze 命令的取消机制：
 /// 如果一个新的 analyze 请求到来，旧的请求会被取消。
 pub async fn run_mole_streaming_with_timeout<F>(
     app: Option<&tauri::AppHandle>,
     args: &[&str],
-    timeout_secs: u64,  // u64 = 64位无符号整数，用于表示秒数
+    _timeout_secs: u64,  // 前缀下划线表示此参数当前未被显式使用（为了兼容接口而保留）
     mut on_line: F,
 ) -> Result<StreamingResult, String>
 where
@@ -338,9 +336,6 @@ where
     })?;
 
     // 检查是否是 analyze 命令（analyze 命令需要额外的取消/追踪逻辑）
-    // args.first() 返回切片的第一个元素 Option<&&str>
-    // map(|s| *s == "analyze") 解引用并比较字符串
-    // unwrap_or(false) 如果切片为空则默认为 false
     let is_analyze = args.first().map(|s| *s == "analyze").unwrap_or(false);
 
     // 如果是 analyze 命令，分配一个新的唯一请求 ID 并取消任何已有的 analyze 任务
@@ -353,14 +348,13 @@ where
     };
 
     // 启动子进程
-    eprintln!("[mole-gui] spawning process with timeout: {} {:?}", mole_path.to_string_lossy(), args);
+    eprintln!("[mole-gui] spawning process: {} {:?}", mole_path.to_string_lossy(), args);
     let mut child = Command::new(&mole_path)
         .args(args)
         .env("LC_ALL", "C")
         .env("NO_COLOR", "1")
-        // 设置环境变量 MOLE_TIMEOUT_HINT_SCAN_SEC 为 2 秒，限制项目构建产物扫描的耗时
-        // 这样可以避免每次扫描都卡顿 15+ 秒，大幅提升系统清理页面的响应速度
-        .env("MOLE_TIMEOUT_HINT_SCAN_SEC", "2")
+        // 注意：原先为了响应速度，在此设置了限制扫描耗时的环境变量（MOLE_TIMEOUT_HINT_SCAN_SEC = 2），
+        // 但这会导致大项目扫描不出任何结果。现已将此限制移除以保证能完整扫描项目。
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -376,11 +370,6 @@ where
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    // 将超时秒数转换为 Duration 类型
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    // 标记是否发生了超时
-    let mut timed_out = false;
-
     // 主读取循环
     loop {
         // 如果是 analyze 任务，检查是否已被更新的请求取消
@@ -390,27 +379,22 @@ where
             return Err(format!("Scan cancelled by new request #{}", request_id));
         }
 
-        // tokio::time::timeout 包装异步操作，添加超时控制
-        // 如果 lines.next_line() 在 timeout_duration 内没有返回，则返回 Err(Elapsed)
-        // 这类似 Java 的 future.get(timeout, TimeUnit.SECONDS)
-        match tokio::time::timeout(timeout_duration, lines.next_line()).await {
-            // 成功读到一行（注意 Ok(Ok(Some(line))) 是三层包裹：timeout/IO/Option）
-            Ok(Ok(Some(line))) => {
+        // 直接异步读取下一行，不再使用 tokio::time::timeout 包装，彻底去除任何超时导致被杀死的逻辑
+        // lines.next_line() 返回 Result<Option<String>, std::io::Error>
+        //   - Ok(Some(line)) 表示读取成功一行
+        //   - Ok(None) 表示遇到了 EOF（流结束）
+        //   - Err(e) 表示发生读写错误
+        match lines.next_line().await {
+            // 成功读到一行
+            Ok(Some(line)) => {
                 on_line(line);
             }
             // 读到 EOF（流结束，进程正常输出完毕）
-            Ok(Ok(None)) => {
+            Ok(None) => {
                 break; // 退出循环
             }
             // 读取发生 I/O 错误，也当作 EOF 处理
-            Ok(Err(_e)) => {
-                break;
-            }
-            // 超时：timeout_duration 内没有读到任何数据
-            // _elapsed 是超时错误对象，前缀 _ 表示我们不使用它
-            Err(_elapsed) => {
-                timed_out = true;
-                let _ = child.kill().await; // 超时则强制杀死进程
+            Err(_e) => {
                 break;
             }
         }
@@ -421,23 +405,18 @@ where
         clear_analyze_task_if_current(request_id);
     }
 
-    // 获取退出码
-    let exit_code = if timed_out {
-        -1 // 超时时没有正常退出码，使用 -1 表示异常
-    } else {
-        // 等待进程自然结束并获取退出码
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("Failed to wait for Mole: {}", e))?;
-        status.code().unwrap_or(-1)
-    };
+    // 等待进程自然结束并获取退出码
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for Mole: {}", e))?;
+    let exit_code = status.code().unwrap_or(-1);
 
     // 构建并返回结果结构体
-    // 注意：这里 cancelled 永远是 false，因为取消的情况在循环里已经提前 return 了
+    // 因为方案 B 彻底去掉了超时机制，timed_out 始终为 false，cancelled 为 false
     Ok(StreamingResult {
         exit_code,
-        timed_out,
+        timed_out: false,
         cancelled: false,
     })
 }
@@ -453,7 +432,7 @@ where
 pub async fn run_mole_streaming_throttled<F>(
     app: Option<&tauri::AppHandle>,
     args: &[&str],
-    timeout_secs: u64,
+    _timeout_secs: u64,        // 此参数目前在函数中被忽略（为了保持签名兼容而保留）
     cancel_flag: &AtomicBool,  // 原子布尔标志位，共享引用（&），用于跨任务发送取消信号
     mut on_batch: F,           // 批量回调：每次接收一组行
 ) -> Result<StreamingResult, String>
@@ -501,21 +480,11 @@ where
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    // 空闲超时（60秒没有任何输出则认为进程卡死）
-    let idle_timeout = Duration::from_secs(IDLE_TIMEOUT_SECS);
-    // 节流间隔：每 100ms 批量推送一次积累的行
+    // 节流间隔：每 100ms 批量推送一次积累的行。此 100ms 超时用于缓冲输出，避免 UI 过于频繁刷新。
     let flush_interval = Duration::from_millis(100);
-    let mut timed_out = false;
     // 行缓冲区：积累输出行，等待批量推送
     // Vec::with_capacity(64) 预分配 64 个元素的容量（优化性能，减少内存重分配）
     let mut buffer: Vec<String> = Vec::with_capacity(64);
-    // 记录函数开始执行的时刻（用于总体超时检查）
-    let start_time = tokio::time::Instant::now();
-    // 记录最后一次收到输出的时刻（用于空闲超时检查）
-    let mut last_output_time = start_time;
-    // 循环计数器（用于周期性触发超时检查，避免每次循环都检查带来的性能开销）
-    let mut loop_count: u64 = 0;
 
     // 主读取循环
     loop {
@@ -536,12 +505,9 @@ where
             });
         }
 
-        // 使用 flush_interval (100ms) 作为读取超时
-        // 如果 100ms 内没有新行，超时后刷新缓冲区
+        // 使用 flush_interval (100ms) 作为读取超时，用于做批量数据推送。该超时不代表进程执行超时。
         match tokio::time::timeout(flush_interval, lines.next_line()).await {
             Ok(Ok(Some(line))) => {
-                // 收到一行数据，更新最后输出时间
-                last_output_time = tokio::time::Instant::now();
                 buffer.push(line); // 加入缓冲区
                 // 如果缓冲区积累了 1000 行以上，立即批量推送（不等 100ms 间隔）
                 // 提高阈值至 1000 能够在大目录快速扫描时大幅减少 IPC 交互次数（降低至原本的 20 分之一）
@@ -561,36 +527,6 @@ where
                 }
             }
         }
-
-        loop_count += 1;
-
-        // 每 50 次循环（约 5 秒）检查一次空闲超时
-        // is_multiple_of(50) 相当于 Java 的 loop_count % 50 == 0，但更安全/地道
-        if loop_count.is_multiple_of(50) {
-            // elapsed() 返回自 last_output_time 以来经过的 Duration
-            let idle_elapsed = last_output_time.elapsed();
-            if idle_elapsed > idle_timeout {
-                eprintln!(
-                    "[mole-gui] No output for {}s (idle timeout {}s) – killing process",
-                    idle_elapsed.as_secs(),
-                    IDLE_TIMEOUT_SECS
-                );
-                timed_out = true;
-                let _ = child.kill().await;
-                break;
-            }
-        }
-
-        // 每 100 次循环（约 10 秒）检查一次总体超时
-        if loop_count.is_multiple_of(100) && start_time.elapsed() > timeout_duration {
-            eprintln!(
-                "[mole-gui] Overall timeout {}s reached – killing process",
-                timeout_secs
-            );
-            timed_out = true;
-            let _ = child.kill().await;
-            break;
-        }
     }
 
     // 最终刷新：把循环结束后缓冲区里还剩的行推送出去
@@ -603,20 +539,16 @@ where
         *guard = None;
     }
 
-    // 获取退出码
-    let exit_code = if timed_out {
-        -1
-    } else {
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("Failed to wait for Mole: {}", e))?;
-        status.code().unwrap_or(-1)
-    };
+    // 获取退出码，由于取消了超时退出机制，此处 timed_out 固定为 false
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for Mole: {}", e))?;
+    let exit_code = status.code().unwrap_or(-1);
 
     Ok(StreamingResult {
         exit_code,
-        timed_out,
+        timed_out: false,
         cancelled: false,
     })
 }
@@ -711,10 +643,11 @@ fn clear_analyze_task_if_current(request_id: u64) {
 ///
 /// 执行时会自动附加 `--permanent` 参数（跳过 macOS 废纸篓，直接用 rm -rf 删除）
 /// 并用 `echo y |` 自动回答任何确认提示。
+/// 执行 Mole CLI 命令，原有总体超时控制已重构移除。
 pub async fn run_mole_streaming_with_timeout_sudo<F>(
     app: Option<&tauri::AppHandle>,
     args: &[&str],
-    timeout_secs: u64,
+    _timeout_secs: u64, // 被忽略，仅为了兼容接口参数
     mut on_line: F,
 ) -> Result<StreamingResult, String>
 where
@@ -724,32 +657,26 @@ where
         "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
     })?;
 
-    // 将参数数组拼接成空格分隔的字符串（相当于 String.join(" ", args)）
+    // 将参数数组拼接成空格分隔的字符串
     let cmd_args = args.join(" ");
 
     // 判断第一个参数是否是 "touchid"
-    // args.first() 返回 Option<&&str>；.copied() 将其转换为 Option<&str>
-    // 类似于 Java 中的 Optional.ofNullable(args.get(0)).filter(arg -> arg.equals("touchid"))
     let shell_cmd = if args.first().copied() == Some("touchid") {
-        // 如果是 touchid 命令，直接执行（touchid 不支持 --permanent 参数，也不需要 echo y 确认）
         format!("\"{}\" {}", mole_path.display(), cmd_args)
     } else {
-        // 构建完整的 shell 命令字符串，并附带自动回答确认和 --permanent 标志（用于 uninstall 等命令）
         format!("echo y | \"{}\" {} --permanent", mole_path.display(), cmd_args)
     };
 
     // 构建 AppleScript 脚本
-    // replace('\\', "\\\\") 将单个反斜杠转义为双反斜杠（AppleScript 字符串转义）
-    // replace('"', "\\\"")  将双引号转义为 \" （在 AppleScript 字符串内部使用）
     let script = format!(
         "do shell script \"{}\" with administrator privileges",
         shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
     );
 
-    // 启动 osascript 进程（macOS 的 AppleScript/JXA 解释器）
+    // 启动 osascript 进程
     let mut child = Command::new("osascript")
-        .arg("-e")       // -e 参数：后面跟脚本内容（而非脚本文件）
-        .arg(&script)    // AppleScript 脚本内容
+        .arg("-e")
+        .arg(&script)
         .env("LC_ALL", "C")
         .env("NO_COLOR", "1")
         .stdout(Stdio::piped())
@@ -767,42 +694,30 @@ where
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    let mut timed_out = false;
-
-    // 读取循环（与 run_mole_streaming_with_timeout 类似，但没有 analyze 取消逻辑）
+    // 读取循环
     loop {
-        match tokio::time::timeout(timeout_duration, lines.next_line()).await {
-            Ok(Ok(Some(line))) => {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
                 on_line(line);
             }
-            Ok(Ok(None)) => {
+            Ok(None) => {
                 break; // EOF
             }
-            Ok(Err(_e)) => {
+            Err(_e) => {
                 break; // 读取错误
-            }
-            Err(_elapsed) => {
-                timed_out = true;
-                let _ = child.kill().await;
-                break;
             }
         }
     }
 
-    let exit_code = if timed_out {
-        -1
-    } else {
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("Failed to wait for osascript: {}", e))?;
-        status.code().unwrap_or(-1)
-    };
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for osascript: {}", e))?;
+    let exit_code = status.code().unwrap_or(-1);
 
     Ok(StreamingResult {
         exit_code,
-        timed_out,
+        timed_out: false,
         cancelled: false,
     })
 }
@@ -810,7 +725,7 @@ where
 /// 执行 Mole CLI 命令，将全部标准输出作为字符串返回（非流式）。
 ///
 /// 适用于输出量小、需要一次性获取结果的场景（如获取版本号）。
-/// 内置 5 秒超时，防止命令卡死。
+/// 方案 B 已重构移除了 5 秒的超时包装和 2 秒扫描环境变量，使命令有充分的时间执行。
 pub async fn run_mole_capture(
     app: Option<&tauri::AppHandle>,
     args: &[&str],
@@ -819,36 +734,43 @@ pub async fn run_mole_capture(
         "Mole CLI not found. Please install it first or configure the path in Settings.".to_string()
     })?;
 
-    // 用 tokio::time::timeout 包装整个命令执行过程
-    // Duration::from_secs(5) 表示 5 秒超时
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        // Command::new().args().env().output() 构建并执行命令，等待完成并收集输出
-        {
-            eprintln!("[mole-gui] capture run: {} {:?}", mole_path.to_string_lossy(), args);
-            Command::new(&mole_path)
-        }
+    // 直接执行命令，等待完成并收集输出
+    let output = {
+        eprintln!("[mole-gui] capture run: {} {:?}", mole_path.to_string_lossy(), args);
+        Command::new(&mole_path)
             .args(args)
             .env("LC_ALL", "C")
             .env("NO_COLOR", "1")
-            .env("MOLE_TIMEOUT_HINT_SCAN_SEC", "2")
-            .output(), // output() 收集 stdout + stderr + 退出状态（不是流式的）
-    )
+            .output() // output() 收集 stdout + stderr + 退出状态
+    }
     .await
-    // 第一个 map_err：处理超时错误（Elapsed 类型）
-    .map_err(|_| "Mole version check timed out".to_string())?
-    // 第二个 map_err：处理 I/O 错误（命令启动失败等）
     .map_err(|e| format!("Failed to run Mole: {}", e))?;
 
+    // 将 stdout 和 stderr 都转成字符串
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
     if output.status.success() {
-        // 将字节输出转换为 UTF-8 字符串
-        // to_string() 将 Cow<str>（String::from_utf8_lossy 返回的类型）转换为 String
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        // 正常退出：直接返回 stdout
+        Ok(stdout)
+    } else if !stdout.is_empty() {
+        // 非零退出码，但 stdout 有内容：仍然返回 stdout。
+        //
+        // 为什么需要这个分支？
+        // dry-run 类命令（如 `mole purge --dry-run`）的设计惯例是：
+        //   - 退出码 0 = 没有内容需要处理（已经干净）
+        //   - 退出码非零 = 发现了需要处理的内容（有条目）
+        // 这与 `diff` 命令的行为一致。
+        // 如果我们在这里返回 Err，调用方就看不到 stdout 里的条目列表了。
+        eprintln!(
+            "[mole-gui] capture run: exit code = {:?}, but stdout has content, returning stdout",
+            output.status.code()
+        );
+        Ok(stdout)
     } else {
-        // 命令以非零状态码退出，返回 stderr 内容作为错误信息
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        // stdout 为空且退出码非零：说明命令真的失败了，返回 stderr 作为错误信息
         Err(if stderr.is_empty() {
-            // 如果 stderr 为空，用退出码构造错误信息
+            // 如果 stderr 也为空，用退出码构造错误信息
             format!("Mole exited with code {}", output.status.code().unwrap_or(-1))
         } else {
             stderr
