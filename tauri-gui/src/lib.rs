@@ -54,6 +54,8 @@ pub fn run() {
             stop_sudo_session,       // 停止/失效 sudo 会话
             get_mole_path_config,    // 获取 Mole CLI 的路径配置
             set_mole_path_config,    // 设置 Mole CLI 的自定义路径
+            get_mole_use_json,       // 获取是否使用 JSON 输出
+            set_mole_use_json,       // 设置是否使用 JSON 输出
             check_full_disk_access,  // 检查完全磁盘访问权限 (FDA)
             get_whitelist_config,    // 获取白名单配置
             save_whitelist_config,   // 保存白名单配置

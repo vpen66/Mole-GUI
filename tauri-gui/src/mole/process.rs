@@ -269,6 +269,7 @@ where
     })?;
 
     // 启动 Mole CLI 子进程
+    eprintln!("[mole-gui] spawning process: {} {:?}", mole_path.to_string_lossy(), args);
     let mut child = Command::new(&mole_path)
         .args(args)               // 传入所有参数
         .env("LC_ALL", "C")       // 设置区域设置为 C（确保输出为 ASCII，避免多语言问题）
@@ -352,6 +353,7 @@ where
     };
 
     // 启动子进程
+    eprintln!("[mole-gui] spawning process with timeout: {} {:?}", mole_path.to_string_lossy(), args);
     let mut child = Command::new(&mole_path)
         .args(args)
         .env("LC_ALL", "C")
@@ -468,6 +470,7 @@ where
     kill_previous_analyze();
 
     // 启动子进程
+    eprintln!("[mole-gui] spawning process throttled: {} {:?}", mole_path.to_string_lossy(), args);
     let mut child = Command::new(&mole_path)
         .args(args)
         .env("LC_ALL", "C")
@@ -821,7 +824,10 @@ pub async fn run_mole_capture(
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         // Command::new().args().env().output() 构建并执行命令，等待完成并收集输出
-        Command::new(&mole_path)
+        {
+            eprintln!("[mole-gui] capture run: {} {:?}", mole_path.to_string_lossy(), args);
+            Command::new(&mole_path)
+        }
             .args(args)
             .env("LC_ALL", "C")
             .env("NO_COLOR", "1")

@@ -26,6 +26,8 @@ export function SettingsPage() {
   const [hasFDA, setHasFDA] = useState(true);
   
   const [guiVersion, setGuiVersion] = useState<string>("");
+  const [useJson, setUseJson] = useState<boolean>(true);
+  const [updatingMode, setUpdatingMode] = useState(false);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -43,6 +45,15 @@ export function SettingsPage() {
       setGuiVersion(versionInfo.version);
     } catch (err) {
       console.error("Failed to load GUI version:", err);
+    }
+  }, []);
+
+  const loadCliMode = useCallback(async () => {
+    try {
+      const mode = await invoke<boolean>("get_mole_use_json");
+      setUseJson(mode);
+    } catch (err) {
+      console.error("Failed to load CLI mode:", err);
     }
   }, []);
 
@@ -70,7 +81,8 @@ export function SettingsPage() {
     loadGuiVersion();
     loadTouchIdStatus();
     checkFDA();
-  }, [loadConfig, loadGuiVersion, loadTouchIdStatus, checkFDA]);
+    loadCliMode();
+  }, [loadConfig, loadGuiVersion, loadTouchIdStatus, checkFDA, loadCliMode]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -123,6 +135,18 @@ export function SettingsPage() {
       setTouchIdError(err instanceof Error ? err.message : String(err));
     } finally {
       setUpdatingTouchId(false);
+    }
+  };
+
+  const handleModeChange = async (val: boolean) => {
+    setUpdatingMode(true);
+    try {
+      await invoke("set_mole_use_json", { useJson: val });
+      setUseJson(val);
+    } catch (err) {
+      console.error("Failed to save CLI mode:", err);
+    } finally {
+      setUpdatingMode(false);
     }
   };
 
@@ -235,6 +259,64 @@ export function SettingsPage() {
             {t("settings.resetToAutoDetect")}
           </button>
         )}
+      </div>
+
+      {/* Mole CLI Integration Mode */}
+      <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Settings2 size={16} className="text-mole-400" />
+          <h2 className="text-sm font-medium">{t("settings.cliMode")}</h2>
+        </div>
+
+        <p className="text-xs text-surface-400">
+          {t("settings.cliModeDesc")}
+        </p>
+
+        <div className="flex flex-col gap-2">
+          <button
+            disabled={updatingMode}
+            onClick={() => handleModeChange(true)}
+            className={`flex items-start text-left p-3 rounded-lg border transition-all ${
+              useJson
+                ? "bg-mole-600/10 border-mole-500 text-white"
+                : "border-surface-700 hover:bg-surface-700/50 text-surface-300"
+            }`}
+          >
+            <div className="flex items-center h-5 mr-3">
+              <input
+                type="radio"
+                checked={useJson === true}
+                onChange={() => {}}
+                className="w-4 h-4 text-mole-600 bg-surface-900 border-surface-600 focus:ring-mole-500 focus:ring-offset-surface-900"
+              />
+            </div>
+            <div>
+              <div className="text-sm font-medium">{t("settings.modeCustom")}</div>
+            </div>
+          </button>
+
+          <button
+            disabled={updatingMode}
+            onClick={() => handleModeChange(false)}
+            className={`flex items-start text-left p-3 rounded-lg border transition-all ${
+              !useJson
+                ? "bg-mole-600/10 border-mole-500 text-white"
+                : "border-surface-700 hover:bg-surface-700/50 text-surface-300"
+            }`}
+          >
+            <div className="flex items-center h-5 mr-3">
+              <input
+                type="radio"
+                checked={useJson === false}
+                onChange={() => {}}
+                className="w-4 h-4 text-mole-600 bg-surface-900 border-surface-600 focus:ring-mole-500 focus:ring-offset-surface-900"
+              />
+            </div>
+            <div>
+              <div className="text-sm font-medium">{t("settings.modeOfficial")}</div>
+            </div>
+          </button>
+        </div>
       </div>
 
       {/* Touch ID Configuration */}

@@ -184,6 +184,10 @@ export const zh: Dictionary = {
   "settings.touchIdEnableSuccess": "成功启用 Touch ID 授权",
   "settings.touchIdDisableSuccess": "成功禁用 Touch ID 授权",
   "settings.touchIdNotSupported": "此 Mac 设备不支持 Touch ID，或者生物识别未开启",
+  "settings.cliMode": "Mole CLI 运行模式",
+  "settings.cliModeDesc": "选择如何与 Mole CLI 进行通信。如果您使用的是原版官方的 Mole CLI，请选择 '官方原版' 模式。",
+  "settings.modeCustom": "适配定制版 (使用 --json 传参)",
+  "settings.modeOfficial": "官方原版 (不带 --json，开启兼容解析)",
 
   // ── 侧边栏导航 ──
   "nav.whitelist": "过滤规则",

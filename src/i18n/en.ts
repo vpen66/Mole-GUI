@@ -184,6 +184,10 @@ export const en: Dictionary = {
   "settings.touchIdEnableSuccess": "Touch ID authentication enabled successfully",
   "settings.touchIdDisableSuccess": "Touch ID authentication disabled successfully",
   "settings.touchIdNotSupported": "Touch ID is not supported on this Mac, or biometrics are disabled",
+  "settings.cliMode": "Mole CLI Integration Mode",
+  "settings.cliModeDesc": "Choose how the GUI communicates with the Mole CLI. If you are using the official un-modified Mole CLI, please select 'Official Release' mode.",
+  "settings.modeCustom": "Adapted Custom Build (uses --json parameter)",
+  "settings.modeOfficial": "Official Release (no --json, compatibility parsing)",
 
   // ── Sidebar Navigation ──
   "nav.whitelist": "Filters",

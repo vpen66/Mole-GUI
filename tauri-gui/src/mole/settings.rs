@@ -100,3 +100,55 @@ pub fn set_configured_mole_path(app: &tauri::AppHandle, path: &str) -> Result<()
     // 相当于 Java void 方法正常返回
     Ok(())
 }
+
+// 在 JSON 存储中，是否启用 --json 适配的键名
+const USE_JSON_KEY: &str = "use_json_output";
+
+/// 从持久化存储中读取用户配置的“是否启用 JSON 输出传输”选项。
+///
+/// 参数:
+///   app - Tauri 应用句柄（相当于 Spring 的 ApplicationContext）
+///
+/// 返回值:
+///   bool —— 返回布尔值，true 表示使用 JSON（默认值，保留原有的定制版 CLI 流程），
+///           false 表示使用原版文本流解析（用 Rust 本地解析原版 mole 的控制台输出）
+pub fn get_use_json_config(app: &tauri::AppHandle) -> bool {
+    // 尝试获取 settings.json 实例，如果出错则直接返回默认值 true
+    let store = match app.store(STORE_PATH) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+
+    // store.get() 返回 Option<serde_json::Value>
+    // and_then 相当于 Java Optional.flatMap，用于安全地链式处理 Option
+    // as_bool() 尝试把 JSON 值转换成 Rust 的 bool 类型（即布尔型）
+    // unwrap_or(true) 表示如果键不存在、转换失败或出错，默认返回 true
+    store.get(USE_JSON_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+/// 将用户是否启用 JSON 输出的选项保存到持久化存储中。
+///
+/// 参数:
+///   app      - Tauri 应用句柄
+///   use_json - true 表示启用 JSON 通信，false 表示使用纯文本兼容模式
+///
+/// 返回值:
+///   Result<(), String> —— Ok(()) 表示保存成功，Err(错误消息) 表示保存失败
+pub fn set_use_json_config(app: &tauri::AppHandle, use_json: bool) -> Result<(), String> {
+    // 打开持久化存储
+    let store = app
+        .store(STORE_PATH)
+        .map_err(|e| format!("Failed to open settings store: {}", e))?;
+
+    // 写入配置。Value::Bool 是 serde_json 对 bool 类型的包装，相当于把布尔类型存入 JSON
+    store.set(USE_JSON_KEY.to_string(), serde_json::Value::Bool(use_json));
+
+    // 写入磁盘
+    store
+        .save()
+        .map_err(|e| format!("Failed to persist settings: {}", e))?;
+
+    Ok(())
+}

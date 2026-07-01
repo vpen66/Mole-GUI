@@ -22,7 +22,12 @@ use tauri::{AppHandle, Emitter, Window};
 // 引入我们自定义的进程管理模块和配置模块
 use crate::mole::process;
 use crate::mole::settings;
-
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
+use serde_json::json;
+use std::os::unix::fs::MetadataExt;
 // ============================================================
 // 超时常量（各操作的最大允许运行时间，单位：秒）
 // ============================================================
@@ -1339,81 +1344,93 @@ pub async fn analyze_scan(
 
     eprintln!("[mole-gui] analyze_scan called with path: {:?}", path);
 
-    let handle = tokio::spawn(async move {
-        // 构建命令参数
-        // mut 允许后续修改 args 向量（添加可选的路径参数）
-        let mut args = vec!["analyze", "--json"];
+    let use_json = settings::get_use_json_config(&app_clone);
 
-        // 处理可选的路径参数
-        // let path_ref 声明变量，稍后在 if 块中赋值（Rust 要求变量在使用前赋值）
-        let path_ref;
-        if let Some(ref p) = path {
-            // ref p 是引用模式：p 是 path 内部字符串的引用，不移走所有权
-            // as_str() 将 &String 转换为 &str
-            path_ref = p.as_str();
-            args.push(path_ref); // 如果指定了路径，加到参数末尾
-        }
+    if !use_json {
+        let scan_path = path.unwrap_or_else(|| "OVERVIEW".to_string());
+        
+        let handle = tokio::spawn(async move {
+            run_rust_native_scan(window_clone, scan_path, &CANCEL_ANALYZE).await
+        });
+        
+        handle.await.map_err(|e| format!("Task error: {}", e))?
+    } else {
+        let handle = tokio::spawn(async move {
+            // 构建命令参数
+            // mut 允许后续修改 args 向量（添加可选的路径参数）
+            let mut args = vec!["analyze", "--json"];
 
-        // 使用节流版本的流式执行（批量推送，防止事件洪水）
-        let result = process::run_mole_streaming_throttled(
-            Some(&app_clone),
-            &args,
-            ANALYZE_TIMEOUT_SECS,
-            &CANCEL_ANALYZE,       // 传入取消标志的引用
-            move |lines: &[String]| {
-                // 批量处理回调：将该批次的所有行解析并存入 batch_events 列表中，最后一次性发送
-                // Vec::with_capacity(lines.len()) 预分配内存，相当于 Java 中的 new ArrayList<>(capacity)
-                // 能够避免数组频繁扩容带来的性能损耗
-                let mut batch_events = Vec::with_capacity(lines.len());
-                for line in lines {
-                    let parsed = parse_mole_line_to_event(line);
-                    // extend 相当于 Java 中的 list.addAll(collection)
-                    // 将一行解析出来的 0 到多个事件追加到 batch_events 列表末尾
-                    batch_events.extend(parsed);
-                }
-                if !batch_events.is_empty() {
-                    // window.emit 发送一个批量 Tauri 事件，载荷（Payload）是一个事件数组
-                    // 这样原本每行发送一次 IPC，现在每 100ms/50条才发送一次，IPC 传输次数减少 95% 以上
-                    // let _ = 忽略返回值（Result），防止编译器发出未使用 Result 的警告
-                    let _ = window_clone.emit("mole-analyze_scan-event", &batch_events);
-                }
-            },
-        )
-        .await;
-
-        match result {
-            Ok(streaming) => {
-                if streaming.timed_out {
-                    // 超时：返回错误（部分结果已通过事件推送）
-                    return Err(format!(
-                        "Analyze scan timed out after {}s. Showing partial results.",
-                        ANALYZE_TIMEOUT_SECS
-                    ));
-                }
-                if streaming.cancelled {
-                    // 用户取消：正常结束，返回空字符串
-                    eprintln!("[mole-gui] Analyze scan was cancelled by user");
-                    return Ok(String::new());
-                }
-                Ok(String::new()) // 正常完成
+            // 处理可选的路径参数
+            // let path_ref 声明变量，稍后在 if 块中赋值（Rust 要求变量在使用前赋值）
+            let path_ref;
+            if let Some(ref p) = path {
+                // ref p 是引用模式：p 是 path 内部字符串的引用，不移走所有权
+                // as_str() 将 &String 转换为 &str
+                path_ref = p.as_str();
+                args.push(path_ref); // 如果指定了路径，加到参数末尾
             }
-            Err(e) => {
-                // 如果错误信息包含 "cancelled"，也视为正常取消（而非错误）
-                if e.contains("cancelled") {
-                    eprintln!("[mole-gui] Analyze scan was gracefully cancelled: {}", e);
-                    Ok(String::new())
-                } else {
-                    Err(e) // 真正的错误，向前端报告
+
+            // 使用节流版本的流式执行（批量推送，防止事件洪水）
+            let result = process::run_mole_streaming_throttled(
+                Some(&app_clone),
+                &args,
+                ANALYZE_TIMEOUT_SECS,
+                &CANCEL_ANALYZE,       // 传入取消标志的引用
+                move |lines: &[String]| {
+                    // 批量处理回调：将该批次的所有行解析并存入 batch_events 列表中，最后一次性发送
+                    // Vec::with_capacity(lines.len()) 预分配内存，相当于 Java 中的 new ArrayList<>(capacity)
+                    // 能够避免数组频繁扩容带来的性能损耗
+                    let mut batch_events = Vec::with_capacity(lines.len());
+                    for line in lines {
+                        let parsed = parse_mole_line_to_event(line);
+                        // extend 相当于 Java 中的 list.addAll(collection)
+                        // 将一行解析出来的 0 到多个事件追加到 batch_events 列表末尾
+                        batch_events.extend(parsed);
+                    }
+                    if !batch_events.is_empty() {
+                        // window.emit 发送一个批量 Tauri 事件，载荷（Payload）是一个事件数组
+                        // 这样原本每行发送一次 IPC，现在每 100ms/50条才发送一次，IPC 传输次数减少 95% 以上
+                        // let _ = 忽略返回值（Result），防止编译器发出未使用 Result 的警告
+                        let _ = window_clone.emit("mole-analyze_scan-event", &batch_events);
+                    }
+                },
+            )
+            .await;
+
+            match result {
+                Ok(streaming) => {
+                    if streaming.timed_out {
+                        // 超时：返回错误（部分结果已通过事件推送）
+                        return Err(format!(
+                            "Analyze scan timed out after {}s. Showing partial results.",
+                            ANALYZE_TIMEOUT_SECS
+                        ));
+                    }
+                    if streaming.cancelled {
+                        // 用户取消：正常结束，返回空字符串
+                        eprintln!("[mole-gui] Analyze scan was cancelled by user");
+                        return Ok(String::new());
+                    }
+                    Ok(String::new()) // 正常完成
+                }
+                Err(e) => {
+                    // 如果错误信息包含 "cancelled"，也视为正常取消（而非错误）
+                    if e.contains("cancelled") {
+                        eprintln!("[mole-gui] Analyze scan was gracefully cancelled: {}", e);
+                        Ok(String::new())
+                    } else {
+                        Err(e) // 真正的错误，向前端报告
+                    }
                 }
             }
-        }
-    });
+        });
 
-    // ? 在这里的作用：将两层 Result 拍平
-    // handle.await → Result<Result<String, String>, JoinError>
-    // map_err 将 JoinError 转为 String
-    // ? 将外层 Result 解包（如果是 Err 则向上传播）
-    handle.await.map_err(|e| format!("Task error: {}", e))?
+        // ? 在这里的作用：将两层 Result 拍平
+        // handle.await → Result<Result<String, String>, JoinError>
+        // map_err 将 JoinError 转为 String
+        // ? 将外层 Result 解包（如果是 Err 则向上传播）
+        handle.await.map_err(|e| format!("Task error: {}", e))?
+    }
 }
 
 /// 取消正在进行的 analyze 扫描。
@@ -1587,10 +1604,31 @@ pub async fn stop_sudo_session() -> Result<(), String> {
     crate::mole::sudo::stop_sudo_session().await;
     Ok(())
 }
+// ============================================================
+// Mole CLI 运行模式配置命令（适配模式 vs 官方原版模式）
+// ============================================================
+
+/// 获取当前是否使用 JSON 输出配置。
+///
+/// 前端调用：await invoke('get_mole_use_json')
+/// 返回：bool，true 表示开启适配模式，false 表示官方原版模式
+#[tauri::command]
+pub fn get_mole_use_json(app: AppHandle) -> bool {
+    settings::get_use_json_config(&app)
+}
+
+/// 设置是否使用 JSON 输出配置。
+///
+/// 前端调用：await invoke('set_mole_use_json', { useJson: bool })
+#[tauri::command]
+pub fn set_mole_use_json(app: AppHandle, use_json: bool) -> Result<(), String> {
+    settings::set_use_json_config(&app, use_json)
+}
 
 // ============================================================
 // Mole CLI 路径配置命令
 // ============================================================
+
 
 /// 获取当前的 Mole CLI 路径配置。
 ///
@@ -2207,3 +2245,559 @@ pub fn open_fda_settings() -> Result<(), String> {
     Ok(())
 }
 
+
+// ============================================================
+// 官方原版 Mole CLI 兼容的本地 Rust 磁盘扫描实现
+// ============================================================
+
+/// 使用纯 Rust 递归且并发计算指定目录树的大小，并将事件流式发回前端。
+/// 这是在官方原版 Mole CLI 模式下使用的 analyze_scan 替代实现。
+async fn run_rust_native_scan(
+    window: tauri::Window,
+    scan_path: String,
+    cancel_flag: &'static AtomicBool,
+) -> Result<String, String> {
+    // --------------------------------------------------------
+    // 1. 系统 Overview 概览模式
+    // --------------------------------------------------------
+    if scan_path == "OVERVIEW" {
+        // 发送初始化进度
+        let _ = window.emit("mole-analyze_scan-event", &vec![json!({
+            "type": "progress",
+            "message": "Checking system folders..."
+        })]);
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        
+        struct OverviewItem {
+            name: String,
+            path: PathBuf,
+            is_insight: bool,
+            is_downloads: bool,
+            exclude_path: Option<PathBuf>,
+        }
+        
+        let mut overview_items = Vec::new();
+        
+        if !home.is_empty() {
+            let home_path = PathBuf::from(&home);
+            let user_library = home_path.join("Library");
+            
+            // 1. Home 目录（需要排除 ~/Library 以免重复计算）
+            overview_items.push(OverviewItem {
+                name: "Home".to_string(),
+                path: home_path.clone(),
+                is_insight: false,
+                is_downloads: false,
+                exclude_path: Some(user_library.clone()),
+            });
+            
+            // 2. User Library 目录
+            if user_library.exists() {
+                overview_items.push(OverviewItem {
+                    name: "User Library".to_string(),
+                    path: user_library.clone(),
+                    is_insight: false,
+                    is_downloads: false,
+                    exclude_path: None,
+                });
+            }
+            
+            // 3. iOS Backups
+            let backup = user_library.join("Application Support/MobileSync/Backup");
+            if backup.exists() {
+                overview_items.push(OverviewItem {
+                    name: "iOS Backups".to_string(),
+                    path: backup,
+                    is_insight: true,
+                    is_downloads: false,
+                    exclude_path: None,
+                });
+            }
+            
+            // 4. Old Downloads (90d+)
+            let downloads = home_path.join("Downloads");
+            if downloads.exists() {
+                overview_items.push(OverviewItem {
+                    name: "Old Downloads (90d+)".to_string(),
+                    path: downloads,
+                    is_insight: true,
+                    is_downloads: true,
+                    exclude_path: None,
+                });
+            }
+            
+            // 5. 隐藏的开发者及缓存项
+            let cleanable_insights = vec![
+                ("System Logs", user_library.join("Logs")),
+                ("Homebrew Cache", user_library.join("Caches/Homebrew")),
+                ("Xcode DerivedData", user_library.join("Developer/Xcode/DerivedData")),
+                ("Xcode Simulators", user_library.join("Developer/CoreSimulator/Devices")),
+                ("Xcode Archives", user_library.join("Developer/Xcode/Archives")),
+                ("Spotify Cache", user_library.join("Application Support/Spotify/PersistentCache")),
+                ("JetBrains Cache", user_library.join("Caches/JetBrains")),
+                ("Docker Data", user_library.join("Containers/com.docker.docker/Data")),
+                ("pip Cache", user_library.join("Caches/pip")),
+                ("Gradle Cache", home_path.join(".gradle/caches")),
+                ("CocoaPods Cache", user_library.join("Caches/CocoaPods")),
+            ];
+            
+            for (name, path) in cleanable_insights {
+                if path.exists() {
+                    overview_items.push(OverviewItem {
+                        name: name.to_string(),
+                        path,
+                        is_insight: true,
+                        is_downloads: false,
+                        exclude_path: None,
+                    });
+                }
+            }
+        }
+        
+        // 6. Applications & System Library
+        let apps_path = PathBuf::from("/Applications");
+        if apps_path.exists() {
+            overview_items.push(OverviewItem {
+                name: "Applications".to_string(),
+                path: apps_path,
+                is_insight: false,
+                is_downloads: false,
+                exclude_path: None,
+            });
+        }
+        let sys_lib_path = PathBuf::from("/Library");
+        if sys_lib_path.exists() {
+            overview_items.push(OverviewItem {
+                name: "System Library".to_string(),
+                path: sys_lib_path,
+                is_insight: false,
+                is_downloads: false,
+                exclude_path: None,
+            });
+        }
+
+        let total_size = Arc::new(AtomicU64::new(0));
+        let total_files = Arc::new(AtomicU64::new(0));
+        let window_arc = Arc::new(window);
+
+        // 并发运行计算每个 OverviewItem 大小
+        let mut tasks = Vec::new();
+        for item in overview_items {
+            let total_size = total_size.clone();
+            let total_files = total_files.clone();
+            let window = window_arc.clone();
+
+            let task = tokio::spawn(async move {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let size = if item.is_downloads {
+                    calculate_old_downloads_size(&item.path, cancel_flag)
+                } else {
+                    let local_size = Arc::new(AtomicU64::new(0));
+                    let local_files = Arc::new(AtomicU64::new(0));
+                    let large_files = Arc::new(Mutex::new(Vec::new()));
+                    
+                    let dir_size = calculate_dir_size(
+                        &item.path, 
+                        &local_size, 
+                        &local_files, 
+                        &large_files, 
+                        item.exclude_path.as_deref(), 
+                        cancel_flag
+                    );
+                    total_files.fetch_add(local_files.load(Ordering::SeqCst), Ordering::SeqCst);
+                    dir_size
+                };
+
+                // 若是 insight 项目且大小为 0，跳过不显示
+                if size == 0 && item.is_insight {
+                    return;
+                }
+
+                total_size.fetch_add(size, Ordering::SeqCst);
+                let path_str = item.path.to_string_lossy().to_string();
+
+                let event = json!({
+                    "type": "entry",
+                    "name": item.name,
+                    "path": path_str,
+                    "size": size,
+                    "is_dir": true,
+                    "insight": item.is_insight,
+                    "cleanable": false,
+                    "last_access": ""
+                });
+
+                let _ = window.emit("mole-analyze_scan-event", &vec![event]);
+            });
+
+            tasks.push(task);
+        }
+
+        // 等待所有度量任务执行完毕
+        for task in tasks {
+            let _ = task.await;
+        }
+
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Ok(String::new());
+        }
+
+        // 发送汇总 summary 数据事件
+        let final_size = total_size.load(Ordering::SeqCst);
+        let final_files = total_files.load(Ordering::SeqCst);
+        
+        let summary_event = json!({
+            "type": "summary",
+            "path": "",
+            "overview": true,
+            "total_size": final_size,
+            "total_files": final_files
+        });
+
+        let _ = window_arc.emit("mole-analyze_scan-event", &vec![summary_event]);
+        return Ok(String::new());
+    }
+
+    // --------------------------------------------------------
+    // 2. 常规目录递归扫描模式
+    // --------------------------------------------------------
+    let root_path = PathBuf::from(&scan_path);
+    if !root_path.exists() {
+        return Err(format!("Path does not exist: {}", scan_path));
+    }
+
+    // 发送初始化进度
+    let scan_msg = format!("Scanning {}...", scan_path);
+    let _ = window.emit("mole-analyze_scan-event", &vec![json!({
+        "type": "progress",
+        "message": scan_msg
+    })]);
+
+    // 获取第一级直接子项
+    let mut first_level_items = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&root_path) {
+        for entry in entries {
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Ok(String::new());
+            }
+            if let Ok(entry) = entry {
+                first_level_items.push(entry.path());
+            }
+        }
+    }
+
+    let total_size = Arc::new(AtomicU64::new(0));
+    let total_files = Arc::new(AtomicU64::new(0));
+    let large_files = Arc::new(Mutex::new(Vec::new()));
+    let window_arc = Arc::new(window);
+
+    // 正在扫描的项名称
+    let current_scanning = Arc::new(Mutex::new(String::new()));
+    
+    // 启动 progress 状态汇报线程
+    let current_scanning_progress = current_scanning.clone();
+    let window_progress = window_arc.clone();
+    let total_size_progress = total_size.clone();
+    
+    let progress_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if cancel_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            let cp = {
+                let lock = current_scanning_progress.lock().unwrap();
+                lock.clone()
+            };
+            if cp.is_empty() {
+                continue;
+            }
+            let size_bytes = total_size_progress.load(Ordering::SeqCst);
+            let size_human = format_size(size_bytes);
+            let msg = format!("Scanning {} ({} scanned)...", cp, size_human);
+            let event = json!({
+                "type": "progress",
+                "message": msg
+            });
+            let _ = window_progress.emit("mole-analyze_scan-event", &vec![event]);
+        }
+    });
+
+    // 并发运行计算每个第一级子项大小的任务
+    let mut tasks = Vec::new();
+    for path in first_level_items {
+        let total_size = total_size.clone();
+        let total_files = total_files.clone();
+        let large_files = large_files.clone();
+        let window = window_arc.clone();
+        let current_scanning = current_scanning.clone();
+
+        let task = tokio::spawn(async move {
+            if cancel_flag.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            // 更新当前扫描状态
+            if let Ok(mut lock) = current_scanning.lock() {
+                *lock = name.clone();
+            }
+
+            let mut is_dir = path.is_dir();
+            // 严格检查并剔除符号链接，防止软链接指向大文件夹被跟随计算
+            if let Ok(meta) = path.symlink_metadata() {
+                if meta.file_type().is_symlink() {
+                    is_dir = false;
+                }
+            }
+
+            let mut size = 0u64;
+            
+            if is_dir {
+                size = calculate_dir_size(&path, &total_size, &total_files, &large_files, None, cancel_flag);
+            } else if let Ok(meta) = path.symlink_metadata() {
+                size = meta.blocks() * 512;
+                total_size.fetch_add(size, Ordering::SeqCst);
+                total_files.fetch_add(1, Ordering::SeqCst);
+                // 大文件检查 (超过 100MB)
+                if size > 100 * 1024 * 1024 {
+                    if let Ok(mut lock) = large_files.lock() {
+                        lock.push(json!({
+                            "name": name.clone(),
+                            "path": path.to_string_lossy().to_string(),
+                            "size": size
+                        }));
+                    }
+                }
+            }
+
+            if cancel_flag.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let path_str = path.to_string_lossy().to_string();
+            // 简单启发式逻辑判定是否可被 GUI 清理
+            let is_cleanable = path_str.contains("Cache") || path_str.contains("Logs") || path_str.contains("Tmp") || path_str.contains("Temp");
+            
+            let event = json!({
+                "type": "entry",
+                "name": name,
+                "path": path_str,
+                "size": size,
+                "is_dir": is_dir,
+                "insight": false,
+                "cleanable": is_cleanable,
+                "last_access": get_last_access_str(&path)
+            });
+            
+            let _ = window.emit("mole-analyze_scan-event", &vec![event]);
+        });
+        
+        tasks.push(task);
+    }
+
+    // 等待所有度量任务执行完毕
+    for task in tasks {
+        let _ = task.await;
+    }
+
+    // 终止 progress 定时推送线程
+    progress_handle.abort();
+
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Ok(String::new());
+    }
+
+    // 发送大文件记录
+    let final_large_files = {
+        let lock = large_files.lock().unwrap();
+        lock.clone()
+    };
+    
+    let mut summary_events = Vec::new();
+    for lf in final_large_files {
+        summary_events.push(json!({
+            "type": "large_file",
+            "name": lf["name"],
+            "path": lf["path"],
+            "size": lf["size"]
+        }));
+    }
+
+    // 发送汇总 summary 数据事件
+    let final_size = total_size.load(Ordering::SeqCst);
+    let final_files = total_files.load(Ordering::SeqCst);
+    
+    summary_events.push(json!({
+        "type": "summary",
+        "path": scan_path,
+        "overview": false,
+        "total_size": final_size,
+        "total_files": final_files
+    }));
+
+    let _ = window_arc.emit("mole-analyze_scan-event", &summary_events);
+
+    Ok(String::new())
+}
+
+/// 递归计算文件夹字节大小并统计文件个数（支持排除特定子路径）
+fn calculate_dir_size(
+    dir: &Path, 
+    total_size: &Arc<AtomicU64>, 
+    total_files: &Arc<AtomicU64>,
+    large_files: &Arc<Mutex<Vec<serde_json::Value>>>,
+    exclude: Option<&Path>,
+    cancel_flag: &AtomicBool
+) -> u64 {
+    let mut size = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+
+    while let Some(path) = stack.pop() {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return size;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&path) {
+            for entry in entries {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return size;
+                }
+                if let Ok(entry) = entry {
+                    let entry_path = entry.path();
+                    
+                    // 排除特定子路径以避免重复统计（例如在 Home 扫描中排除 ~/Library）
+                    if let Some(ex) = exclude {
+                        if entry_path == ex {
+                            continue;
+                        }
+                    }
+                    
+                    // 严格检测符号链接：若为符号链接，只计算链接本身大小，绝不入栈递归，防止循环嵌套和重复计算
+                    if let Ok(file_type) = entry.file_type() {
+                        if file_type.is_symlink() {
+                            if let Ok(meta) = entry_path.symlink_metadata() {
+                                let file_size = meta.blocks() * 512;
+                                size += file_size;
+                                total_size.fetch_add(file_size, Ordering::SeqCst);
+                                total_files.fetch_add(1, Ordering::SeqCst);
+                            }
+                            continue;
+                        }
+                    }
+
+                    if entry_path.is_dir() {
+                        stack.push(entry_path);
+                    } else if let Ok(meta) = entry_path.symlink_metadata() {
+                        let file_size = meta.blocks() * 512;
+                        size += file_size;
+                        total_size.fetch_add(file_size, Ordering::SeqCst);
+                        total_files.fetch_add(1, Ordering::SeqCst);
+                        
+                        // 大文件检查 (超过 100MB)
+                        if file_size > 100 * 1024 * 1024 {
+                            let name = entry_path.file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            if let Ok(mut lock) = large_files.lock() {
+                                lock.push(json!({
+                                    "name": name,
+                                    "path": entry_path.to_string_lossy().to_string(),
+                                    "size": file_size
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    size
+}
+
+/// 计算 Downloads 目录下 90 天以上未修改的文件大小总和（匹配官方 Go 实现机制）
+fn calculate_old_downloads_size(dir: &Path, cancel_flag: &AtomicBool) -> u64 {
+    let mut total_size = 0u64;
+    let ninety_days = Duration::from_secs(90 * 24 * 3600);
+    let now = std::time::SystemTime::now();
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries {
+            if cancel_flag.load(Ordering::SeqCst) {
+                return total_size;
+            }
+            if let Ok(entry) = entry {
+                let entry_path = entry.path();
+                // 忽略隐藏文件
+                if let Some(name) = entry_path.file_name() {
+                    if name.to_string_lossy().starts_with('.') {
+                        continue;
+                    }
+                }
+                
+                if let Ok(meta) = entry_path.symlink_metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(age) = now.duration_since(modified) {
+                            if age > ninety_days {
+                                if entry_path.is_dir() {
+                                    // 递归测量整个子文件夹
+                                    let local_size = Arc::new(AtomicU64::new(0));
+                                    let local_files = Arc::new(AtomicU64::new(0));
+                                    let large_files = Arc::new(Mutex::new(Vec::new()));
+                                    let dir_size = calculate_dir_size(&entry_path, &local_size, &local_files, &large_files, None, cancel_flag);
+                                    total_size += dir_size;
+                                } else {
+                                    total_size += meta.blocks() * 512;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total_size
+}
+
+/// 获取文件的上次访问时间，并转换为天数友好的格式
+fn get_last_access_str(path: &Path) -> String {
+    if let Ok(meta) = path.metadata() {
+        if let Ok(accessed) = meta.accessed() {
+            if let Ok(days_ago) = std::time::SystemTime::now().duration_since(accessed)
+                .map(|d| d.as_secs() / 86400)
+            {
+                if days_ago == 0 {
+                    return "Today".to_string();
+                } else if days_ago == 1 {
+                    return "Yesterday".to_string();
+                } else {
+                    return format!("{} days ago", days_ago);
+                }
+            }
+        }
+    }
+    "".to_string()
+}
+
+/// 将字节大小格式化为人类可读字符串（使用 1000 进制与官方原版 CLI 保持一致）
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1000;
+    const MB: u64 = KB * 1000;
+    const GB: u64 = MB * 1000;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
