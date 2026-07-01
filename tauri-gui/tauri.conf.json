@@ -1,6 +1,6 @@
 {
   "productName": "MoleGui",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "identifier": "com.vpen.tauri-gui",
   "build": {
     "frontendDist": "../dist",
@@ -23,10 +23,10 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "signingIdentity": "Apple Development: 1453313323@qq.com (AC2K4XJ4US)",
+      "signingIdentity": "-",
       "providerShortName": null,
       "entitlements": "entitlements.plist",
-      "hardenedRuntime": true
+      "hardenedRuntime": false
     }
   }
 }

@@ -1760,6 +1760,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mole-gui"
+version = "1.0.9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-shell",
+ "tauri-plugin-store",
+ "tokio",
+]
+
+[[package]]
 name = "muda"
 version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,19 +3145,6 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-gui"
-version = "1.0.7"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-shell",
- "tauri-plugin-store",
- "tokio",
 ]
 
 [[package]]

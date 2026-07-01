@@ -11,6 +11,10 @@ jobs:
     permissions:
       contents: write # 必须赋予写入权限，以便创建 Release 并上传资源
     runs-on: macos-latest # macOS 应用必须在 macOS 环境中构建
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
 
     steps:
       - name: Checkout repository
@@ -68,6 +72,7 @@ jobs:
           # 使用从 Git tag 提取的版本号
           tagName: ${{ steps.extract_version.outputs.TAG }}
           releaseName: "MoleGui ${{ steps.extract_version.outputs.TAG }}"
+          args: --target ${{ matrix.target }}
           releaseBody: |
             ## 📦 Mole GUI macOS Desktop App
             
