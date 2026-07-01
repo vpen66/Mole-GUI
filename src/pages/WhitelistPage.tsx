@@ -112,7 +112,7 @@ export function WhitelistPage() {
   const isZh = locale === "zh";
 
   // Tabs status
-  const [activeTab, setActiveTab] = useState<"clean" | "optimize" | "purge">("clean");
+  const [activeTab, setActiveTab] = useState<"clean" | "optimize" | "purge" | "overview">("clean");
 
   // Clean Whitelist states
   const [activeCleanPatterns, setActiveCleanPatterns] = useState<string[]>([]);
@@ -125,6 +125,20 @@ export function WhitelistPage() {
   // Purge Paths states
   const [purgePaths, setPurgePaths] = useState<string[]>([]);
   const [newPurgePathInput, setNewPurgePathInput] = useState("");
+
+  // Overview 概览扫描目录白名单状态管理
+  interface OverviewDir {
+    name: string;
+    path: string;
+    is_insight: boolean;
+    is_downloads: boolean;
+    exclude_path?: string;
+  }
+  const [overviewDirs, setOverviewDirs] = useState<OverviewDir[]>([]);
+  const [newDirName, setNewDirName] = useState("");
+  const [newDirPath, setNewDirPath] = useState("");
+  const [newIsInsight, setNewIsInsight] = useState(false);
+  const [newIsDownloads, setNewIsDownloads] = useState(false);
 
   // Status & Error states
   const [loading, setLoading] = useState(false);
@@ -191,6 +205,10 @@ export function WhitelistPage() {
       // 3. Fetch purge paths
       const purgeList = await invoke<string[]>("get_purge_paths");
       setPurgePaths(purgeList);
+
+      // 4. Fetch overview directories config
+      const overviewList = await invoke<OverviewDir[]>("get_overview_dirs");
+      setOverviewDirs(overviewList);
     } catch (err) {
       console.error("Failed to load configs:", err);
       setError(err instanceof Error ? err.message : String(err));
@@ -312,6 +330,51 @@ export function WhitelistPage() {
     }
   };
 
+  const handleAddOverviewDir = async () => {
+    if (!newDirName || !newDirPath) return;
+    const newDir: OverviewDir = {
+      name: newDirName,
+      path: newDirPath,
+      is_insight: newIsInsight,
+      is_downloads: newIsDownloads,
+    };
+    const updated = [...overviewDirs, newDir];
+    setOverviewDirs(updated);
+    setNewDirName("");
+    setNewDirPath("");
+    setNewIsInsight(false);
+    setNewIsDownloads(false);
+
+    setLoading(true);
+    try {
+      await invoke("set_overview_dirs", { dirs: updated });
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (err) {
+      setSaveStatus("error");
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveOverviewDir = async (index: number) => {
+    const updated = overviewDirs.filter((_, i) => i !== index);
+    setOverviewDirs(updated);
+
+    setLoading(true);
+    try {
+      await invoke("set_overview_dirs", { dirs: updated });
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (err) {
+      setSaveStatus("error");
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="p-8 max-w-4xl space-y-6">
       <div className="flex items-center justify-between">
@@ -342,7 +405,7 @@ export function WhitelistPage() {
 
       {/* Tabs Menu */}
       <div className="flex border-b border-surface-700">
-        {(["clean", "optimize", "purge"] as const).map((tab) => (
+        {(["clean", "optimize", "purge", "overview"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -594,6 +657,99 @@ export function WhitelistPage() {
               <p className="text-[10px] text-surface-500">
                 支持使用 ~ 代表用户主目录，如 ~/Projects/work
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* Panel 4: Overview Scan Whitelist */}
+        {activeTab === "overview" && (
+          <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 space-y-4 shadow-sm animate-fade-in">
+            <div className="flex items-center gap-2 border-b border-surface-700 pb-2 text-surface-200">
+              <FolderOpen size={16} className="text-mole-400" />
+              <h2 className="text-sm font-medium">{t("whitelist.overviewSection")}</h2>
+            </div>
+            
+            <p className="text-xs text-surface-400 leading-normal">
+              {t("whitelist.overviewHelp")}
+            </p>
+
+            {/* Existing items list */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
+              {overviewDirs.map((dir, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between bg-surface-900 border border-surface-750 rounded-lg p-3 text-xs text-surface-300 relative group"
+                >
+                  <div className="min-w-0 flex-1 mr-2">
+                    <span className="font-semibold text-white block truncate">{dir.name}</span>
+                    <span className="font-mono text-surface-500 block truncate mt-0.5">{dir.path}</span>
+                    <div className="flex gap-2 mt-1 text-[10px]">
+                      {dir.is_insight && <span className="text-purple-400 bg-purple-950/20 px-1.5 rounded">Insight</span>}
+                      {dir.is_downloads && <span className="text-amber-400 bg-amber-950/20 px-1.5 rounded">Downloads 90d</span>}
+                      {dir.exclude_path && <span className="text-surface-500 font-mono">Exclude: {dir.exclude_path}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveOverviewDir(idx)}
+                    className="p-1.5 text-surface-400 hover:text-red-400 hover:bg-surface-800 rounded transition-colors shrink-0"
+                    title="删除 (Delete)"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+              {overviewDirs.length === 0 && (
+                <div className="text-center py-6 text-xs text-surface-500 col-span-2">暂无配置的概览白名单目录</div>
+              )}
+            </div>
+
+            {/* Add new item form */}
+            <div className="border-t border-surface-750 pt-4 space-y-3">
+              <div className="text-xs font-semibold text-surface-300">新增概览目录配置：</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  placeholder="名称 (如 Gradle Cache)"
+                  value={newDirName}
+                  onChange={(e) => setNewDirName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-lg bg-surface-900 border border-surface-700 text-white placeholder:text-surface-650 focus:outline-none focus:border-mole-500"
+                />
+                <input
+                  type="text"
+                  placeholder="绝对路径 (如 ~/.gradle/caches)"
+                  value={newDirPath}
+                  onChange={(e) => setNewDirPath(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-surface-900 border border-surface-700 text-white placeholder:text-surface-650 focus:outline-none focus:border-mole-500"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs mt-1">
+                <label className="flex items-center gap-1.5 cursor-pointer text-surface-400 hover:text-surface-300">
+                  <input
+                    type="checkbox"
+                    checked={newIsInsight}
+                    onChange={(e) => setNewIsInsight(e.target.checked)}
+                    className="rounded border-surface-700 text-mole-600 focus:ring-mole-500 bg-surface-900 w-3.5 h-3.5"
+                  />
+                  <span>开发者洞察 (大小为 0 时在主列表自动隐藏)</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer text-surface-400 hover:text-surface-300">
+                  <input
+                    type="checkbox"
+                    checked={newIsDownloads}
+                    onChange={(e) => setNewIsDownloads(e.target.checked)}
+                    className="rounded border-surface-700 text-mole-600 focus:ring-mole-500 bg-surface-900 w-3.5 h-3.5"
+                  />
+                  <span>只统计 90 天以上未修改文件</span>
+                </label>
+              </div>
+              <button
+                onClick={handleAddOverviewDir}
+                disabled={!newDirName || !newDirPath}
+                className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-mole-600 hover:bg-mole-500 border border-mole-500 text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Plus size={12} />
+                添加项目
+              </button>
             </div>
           </div>
         )}

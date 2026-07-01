@@ -152,6 +152,8 @@ export const zh: Dictionary = {
   "analyze.inThisDir": "在此目录中",
   "analyze.largeFiles": "大文件",
   "analyze.cleanable": "可清理",
+  "analyze.doubleClickToOpen": "双击在访达中打开此路径",
+  "analyze.enterDirectory": "进入此目录以浏览文件",
 
   // ── 历史 ──
   "history.title": "操作历史",
@@ -198,8 +200,11 @@ export const zh: Dictionary = {
   "whitelist.tab.clean": "清理白名单",
   "whitelist.tab.optimize": "优化忽略项",
   "whitelist.tab.purge": "清除扫描目录",
+  "whitelist.tab.overview": "概览扫描项",
   "whitelist.saveSuccess": "白名单保存成功",
   "whitelist.saveFailed": "白名单保存失败",
+  "whitelist.overviewSection": "系统概览扫描白名单",
+  "whitelist.overviewHelp": "您可以配置在磁盘分析中「系统概览」模式下被扫描的目录及规则。",
   "whitelist.addCustomPath": "添加自定义路径",
   "whitelist.customPathPlaceholder": "输入自定义文件夹或文件路径，如 ~/Projects",
   "whitelist.customPathHelp": "支持使用 ~ 代表用户主目录，支持 * 通配符",

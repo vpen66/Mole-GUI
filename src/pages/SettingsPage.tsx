@@ -29,6 +29,7 @@ export function SettingsPage() {
   const [useJson, setUseJson] = useState<boolean>(true);
   const [updatingMode, setUpdatingMode] = useState(false);
 
+
   const loadConfig = useCallback(async () => {
     try {
       const cfg = await invoke<MolePathConfig>("get_mole_path_config");
@@ -393,6 +394,8 @@ export function SettingsPage() {
           </p>
         </div>
       )}
+
+
 
       {/* About section */}
       <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 space-y-3">

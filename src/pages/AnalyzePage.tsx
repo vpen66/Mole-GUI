@@ -25,6 +25,53 @@ export function AnalyzePage() {
   const scanAbortRef = useRef(0);
 
   const currentPath = pathStack.length > 0 ? pathStack[pathStack.length - 1] ?? null : null;
+
+  // 树形折叠展开状态管理
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [childrenCache, setChildrenCache] = useState<Record<string, any[]>>({});
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+
+  const handleToggleExpand = useCallback(async (entry: AnalyzeEntry) => {
+    const path = entry.path;
+    const isExpanded = expandedPaths.has(path);
+    
+    const nextExpanded = new Set(expandedPaths);
+    if (isExpanded) {
+      nextExpanded.delete(path);
+      setExpandedPaths(nextExpanded);
+    } else {
+      nextExpanded.add(path);
+      setExpandedPaths(nextExpanded);
+      
+      // 如果没有拉取过，则进行拉取
+      if (!childrenCache[path]) {
+        const nextLoading = new Set(loadingPaths);
+        nextLoading.add(path);
+        setLoadingPaths(nextLoading);
+        
+        try {
+          const res = await invoke<any[]>("get_directory_entries", { path });
+          setChildrenCache(prev => ({
+            ...prev,
+            [path]: res
+          }));
+        } catch (err) {
+          console.error("Failed to load sub-directory entries:", err);
+        } finally {
+          const finalLoading = new Set(loadingPaths);
+          finalLoading.delete(path);
+          setLoadingPaths(finalLoading);
+        }
+      }
+    }
+  }, [expandedPaths, childrenCache, loadingPaths]);
+
+  // 当 currentPath 改变时，清空子目录展开状态
+  useEffect(() => {
+    setExpandedPaths(new Set());
+    setChildrenCache({});
+    setLoadingPaths(new Set());
+  }, [currentPath]);
   
   // Get current state from store
   const result = scanStore.getResult(currentPath);
@@ -370,6 +417,36 @@ export function AnalyzePage() {
     [result?.entries]
   );
 
+  const renderItems = useMemo(() => {
+    if (!result || !result.entries) return [];
+    
+    const getItems = (entries: AnalyzeEntry[], depth: number = 0): { entry: AnalyzeEntry; depth: number }[] => {
+      let list: { entry: AnalyzeEntry; depth: number }[] = [];
+      const sorted = [...entries].sort((a, b) => b.size - a.size);
+      
+      for (const entry of sorted) {
+        list.push({ entry, depth });
+        if (expandedPaths.has(entry.path)) {
+          const children = childrenCache[entry.path];
+          if (children) {
+            const childEntries: AnalyzeEntry[] = children.map(c => ({
+              name: c.name,
+              path: c.path,
+              size: c.size,
+              is_dir: c.is_dir,
+              insight: c.insight,
+              cleanable: c.cleanable,
+            }));
+            list = list.concat(getItems(childEntries, depth + 1));
+          }
+        }
+      }
+      return list;
+    };
+
+    return getItems(result.entries);
+  }, [result, expandedPaths, childrenCache]);
+
   const maxSize = sortedEntries[0]?.size ?? 1;
 
   return (
@@ -573,14 +650,18 @@ export function AnalyzePage() {
 
           {/* Entries list */}
           <div className="space-y-1">
-            {sortedEntries.map((entry) => (
+            {renderItems.map(({ entry, depth }) => (
               <EntryRow
                 key={entry.path}
                 entry={entry}
+                depth={depth}
                 maxSize={maxSize}
                 onDrillDown={handleDrillDown}
                 isSelected={selectedPaths.has(entry.path)}
                 onSelectToggle={getSelectToggle(entry.path)}
+                isExpanded={expandedPaths.has(entry.path)}
+                isLoading={loadingPaths.has(entry.path)}
+                onToggleExpand={() => handleToggleExpand(entry)}
               />
             ))}
           </div>
@@ -614,16 +695,24 @@ export function AnalyzePage() {
 
 const EntryRow = React.memo(function EntryRow({
   entry,
+  depth = 0,
   maxSize,
   onDrillDown,
   isSelected = false,
   onSelectToggle,
+  isExpanded = false,
+  isLoading = false,
+  onToggleExpand,
 }: {
   entry: AnalyzeEntry;
+  depth?: number;
   maxSize: number;
   onDrillDown: (e: AnalyzeEntry) => void;
   isSelected?: boolean;
   onSelectToggle?: () => void;
+  isExpanded?: boolean;
+  isLoading?: boolean;
+  onToggleExpand?: () => void;
 }) {
   const { t } = useT();
   const pct = maxSize > 0 ? Math.max(2, (entry.size / maxSize) * 100) : 2;
@@ -635,16 +724,26 @@ const EntryRow = React.memo(function EntryRow({
     }
   };
 
+  const handleRowDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    invoke("open_path_in_finder", { path: entry.path }).catch((err) => {
+      console.error("Failed to open finder:", err);
+    });
+  };
+
   return (
     <div
       onClick={handleRowClick}
-      className={`w-full flex items-center gap-3 px-3 py-2 border rounded-lg hover:bg-surface-750 transition-colors group text-left ${
+      onDoubleClick={handleRowDoubleClick}
+      style={{ marginLeft: `${depth * 20}px` }}
+      className={`flex items-center gap-3 px-3 py-2 border rounded-lg hover:bg-surface-750 transition-all group text-left ${
         isDir ? 'cursor-pointer' : 'cursor-default'
       } ${
         isSelected
           ? 'bg-cyan-900/30 border-cyan-500/50'
           : 'bg-surface-800 border-surface-700'
       }`}
+      title={t("analyze.doubleClickToOpen") || "Double click to open in Finder"}
     >
       {/* Selection checkbox */}
       <div 
@@ -696,10 +795,23 @@ const EntryRow = React.memo(function EntryRow({
           {formatBytes(entry.size)}
         </span>
         {isDir && (
-          <ChevronRight
-            size={13}
-            className="text-surface-500 group-hover:text-surface-300 transition-colors"
-          />
+          <div
+            onClick={(e: React.MouseEvent) => {
+              e.stopPropagation();
+              onToggleExpand?.();
+            }}
+            className="p-1 hover:bg-surface-700 rounded-md cursor-pointer text-surface-500 hover:text-cyan-400 transition-colors"
+            title={isExpanded ? t("common.collapse") || "Collapse" : t("common.expand") || "Expand"}
+          >
+            {isLoading ? (
+              <div className="w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            ) : (
+              <ChevronRight
+                size={16}
+                className={`transition-transform duration-200 ${isExpanded ? "rotate-90 text-cyan-400" : ""}`}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>

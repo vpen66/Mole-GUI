@@ -152,6 +152,8 @@ export const en: Dictionary = {
   "analyze.inThisDir": "in this directory",
   "analyze.largeFiles": "Large Files",
   "analyze.cleanable": "cleanable",
+  "analyze.doubleClickToOpen": "Double click to open this path in Finder",
+  "analyze.enterDirectory": "Enter this directory to browse files",
 
   // ── History ──
   "history.title": "Operation History",
@@ -198,8 +200,11 @@ export const en: Dictionary = {
   "whitelist.tab.clean": "Clean Whitelist",
   "whitelist.tab.optimize": "Optimize Ignored",
   "whitelist.tab.purge": "Purge Scan Paths",
+  "whitelist.tab.overview": "Overview Paths",
   "whitelist.saveSuccess": "Whitelist saved successfully",
   "whitelist.saveFailed": "Failed to save whitelist",
+  "whitelist.overviewSection": "System Overview Scanned Paths",
+  "whitelist.overviewHelp": "You can configure which directories and rules are evaluated under the 'System Overview' disk analysis mode.",
   "whitelist.addCustomPath": "Add Custom Path",
   "whitelist.customPathPlaceholder": "Enter custom directory or file path, e.g. ~/Projects",
   "whitelist.customPathHelp": "Supports ~ for home directory and * as wildcard",

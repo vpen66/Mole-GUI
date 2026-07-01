@@ -152,3 +152,172 @@ pub fn set_use_json_config(app: &tauri::AppHandle, use_json: bool) -> Result<(),
 
     Ok(())
 }
+
+// 在 JSON 存储中，系统 Overview 扫描路径列表的键名
+const OVERVIEW_DIRS_KEY: &str = "overview_directories";
+
+/// 表示一个系统 Overview 概览模式下要扫描的目录配置（白名单项）
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct OverviewDir {
+    pub name: String,
+    pub path: String,
+    pub is_insight: bool,
+    pub is_downloads: bool,
+    pub exclude_path: Option<String>,
+}
+
+/// 获取默认的概览扫描白名单（用于首次启动或无配置时）
+fn get_default_overview_dirs() -> Vec<OverviewDir> {
+    vec![
+        OverviewDir {
+            name: "Home".to_string(),
+            path: "~/".to_string(),
+            is_insight: false,
+            is_downloads: false,
+            exclude_path: Some("~/Library".to_string()),
+        },
+        OverviewDir {
+            name: "User Library".to_string(),
+            path: "~/Library".to_string(),
+            is_insight: false,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "iOS Backups".to_string(),
+            path: "~/Library/Application Support/MobileSync/Backup".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Old Downloads (90d+)".to_string(),
+            path: "~/Downloads".to_string(),
+            is_insight: true,
+            is_downloads: true,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "System Logs".to_string(),
+            path: "~/Library/Logs".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Homebrew Cache".to_string(),
+            path: "~/Library/Caches/Homebrew".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Xcode DerivedData".to_string(),
+            path: "~/Library/Developer/Xcode/DerivedData".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Xcode Simulators".to_string(),
+            path: "~/Library/Developer/CoreSimulator/Devices".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Xcode Archives".to_string(),
+            path: "~/Library/Developer/Xcode/Archives".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Spotify Cache".to_string(),
+            path: "~/Library/Application Support/Spotify/PersistentCache".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "JetBrains Cache".to_string(),
+            path: "~/Library/Caches/JetBrains".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Docker Data".to_string(),
+            path: "~/Library/Containers/com.docker.docker/Data".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "pip Cache".to_string(),
+            path: "~/Library/Caches/pip".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Gradle Cache".to_string(),
+            path: "~/.gradle/caches".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "CocoaPods Cache".to_string(),
+            path: "~/Library/Caches/CocoaPods".to_string(),
+            is_insight: true,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "Applications".to_string(),
+            path: "/Applications".to_string(),
+            is_insight: false,
+            is_downloads: false,
+            exclude_path: None,
+        },
+        OverviewDir {
+            name: "System Library".to_string(),
+            path: "/Library".to_string(),
+            is_insight: false,
+            is_downloads: false,
+            exclude_path: None,
+        },
+    ]
+}
+
+/// 从持久化存储中读取用户配置的 Overview 概览扫描白名单目录列表。
+pub fn get_overview_dirs_config(app: &tauri::AppHandle) -> Vec<OverviewDir> {
+    let store = match app.store(STORE_PATH) {
+        Ok(s) => s,
+        Err(_) => return get_default_overview_dirs(),
+    };
+
+    store.get(OVERVIEW_DIRS_KEY)
+        .and_then(|v| serde_json::from_value::<Vec<OverviewDir>>(v.clone()).ok())
+        .unwrap_or_else(get_default_overview_dirs)
+}
+
+/// 将用户自定义的 Overview 概览扫描白名单目录列表保存到持久化存储。
+pub fn set_overview_dirs_config(app: &tauri::AppHandle, dirs: Vec<OverviewDir>) -> Result<(), String> {
+    let store = app
+        .store(STORE_PATH)
+        .map_err(|e| format!("Failed to open settings store: {}", e))?;
+
+    let value = serde_json::to_value(dirs)
+        .map_err(|e| format!("Failed to serialize overview dirs: {}", e))?;
+
+    store.set(OVERVIEW_DIRS_KEY.to_string(), value);
+
+    store
+        .save()
+        .map_err(|e| format!("Failed to persist settings: {}", e))?;
+
+    Ok(())
+}
+

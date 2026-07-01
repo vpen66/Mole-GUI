@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //   AppHandle — 应用句柄（全局上下文，类似 Spring 的 ApplicationContext）
 //   Emitter   — 事件发送 trait，让 window 具备向前端推送事件的能力
 //   Window    — 窗口引用（用于向前端发送事件）
-use tauri::{AppHandle, Emitter, Window};
+use tauri::{AppHandle, Emitter, Window, Manager};
 // 引入我们自定义的进程管理模块和配置模块
 use crate::mole::process;
 use crate::mole::settings;
@@ -2245,6 +2245,120 @@ pub fn open_fda_settings() -> Result<(), String> {
     Ok(())
 }
 
+/// 在 macOS 访达（Finder）中打开指定的文件或目录路径。
+///
+/// 前端调用：await invoke('open_path_in_finder', { path: '/Users/xxx/Documents' })
+/// 返回：Result<(), String>
+#[tauri::command]
+pub fn open_path_in_finder(path: String) -> Result<(), String> {
+    // 验证路径的合法性，防止穿越和注入攻击
+    validate_path(&path)?;
+
+    // 使用系统自带的 open 工具打开目录
+    std::process::Command::new("open")
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("无法打开访达窗口: {}", e))?;
+    Ok(())
+}
+
+/// 获取指定目录下的第一级直接子项列表（包含其大小和属性）。
+/// 用于在前端磁盘分析中以类似树状折叠列表形式展开展示。
+///
+/// 前端调用：await invoke('get_directory_entries', { path: '/Users/xxx/Downloads' })
+/// 返回：Vec<SimpleEntry>（子项列表）
+#[derive(serde::Serialize)]
+pub struct SimpleEntry {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub insight: bool,
+    pub cleanable: bool,
+}
+
+#[tauri::command]
+pub async fn get_directory_entries(
+    _app: AppHandle,
+    path: String,
+) -> Result<Vec<SimpleEntry>, String> {
+    // 安全验证路径
+    validate_path(&path)?;
+
+    let root_path = PathBuf::from(&path);
+    if !root_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    // 读取第一层子项
+    let mut items = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&root_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                items.push(entry.path());
+            }
+        }
+    }
+
+    // 创建一个假的取消标志位传参给子项大小度量（此处不进行深度长时间运行，故使用局部静态的取消信号）
+    let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut tasks = Vec::new();
+
+    for p in items {
+        let cancel_clone = cancel_flag.clone();
+        let task = tokio::spawn(async move {
+            let name = p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            let mut is_dir = p.is_dir();
+            if let Ok(meta) = p.symlink_metadata() {
+                if meta.file_type().is_symlink() {
+                    is_dir = false;
+                }
+            }
+
+            let size = if is_dir {
+                let local_size = Arc::new(AtomicU64::new(0));
+                let local_files = Arc::new(AtomicU64::new(0));
+                let large_files = Arc::new(Mutex::new(Vec::new()));
+                calculate_dir_size(&p, &local_size, &local_files, &large_files, None, &cancel_clone)
+            } else if let Ok(meta) = p.symlink_metadata() {
+                meta.blocks() * 512
+            } else {
+                0
+            };
+
+            let path_str = p.to_string_lossy().to_string();
+            let is_cleanable = path_str.contains("Cache") || path_str.contains("Logs") || path_str.contains("Tmp") || path_str.contains("Temp");
+
+            SimpleEntry {
+                name,
+                path: path_str,
+                size,
+                is_dir,
+                insight: false,
+                cleanable: is_cleanable,
+            }
+        });
+        tasks.push(task);
+    }
+
+    let mut results = Vec::new();
+    for task in tasks {
+        if let Ok(entry) = task.await {
+            results.push(entry);
+        }
+    }
+
+    // 按照大小降序排列
+    results.sort_by(|a, b| b.size.cmp(&a.size));
+
+    Ok(results)
+}
+
+
+
 
 // ============================================================
 // 官方原版 Mole CLI 兼容的本地 Rust 磁盘扫描实现
@@ -2268,7 +2382,11 @@ async fn run_rust_native_scan(
         })]);
 
         let home = std::env::var("HOME").unwrap_or_default();
+        let app_handle = window.app_handle();
         
+        // 从持久化存储中读取自定义/默认的 Overview 概览白名单配置
+        let configured_dirs = settings::get_overview_dirs_config(&app_handle);
+
         struct OverviewItem {
             name: String,
             path: PathBuf,
@@ -2279,102 +2397,18 @@ async fn run_rust_native_scan(
         
         let mut overview_items = Vec::new();
         
-        if !home.is_empty() {
-            let home_path = PathBuf::from(&home);
-            let user_library = home_path.join("Library");
-            
-            // 1. Home 目录（需要排除 ~/Library 以免重复计算）
-            overview_items.push(OverviewItem {
-                name: "Home".to_string(),
-                path: home_path.clone(),
-                is_insight: false,
-                is_downloads: false,
-                exclude_path: Some(user_library.clone()),
-            });
-            
-            // 2. User Library 目录
-            if user_library.exists() {
+        for dir in configured_dirs {
+            let expanded_path = expand_home_path(&dir.path, &home);
+            if expanded_path.exists() {
+                let expanded_exclude = dir.exclude_path.map(|ep| expand_home_path(&ep, &home));
                 overview_items.push(OverviewItem {
-                    name: "User Library".to_string(),
-                    path: user_library.clone(),
-                    is_insight: false,
-                    is_downloads: false,
-                    exclude_path: None,
+                    name: dir.name,
+                    path: expanded_path,
+                    is_insight: dir.is_insight,
+                    is_downloads: dir.is_downloads,
+                    exclude_path: expanded_exclude,
                 });
             }
-            
-            // 3. iOS Backups
-            let backup = user_library.join("Application Support/MobileSync/Backup");
-            if backup.exists() {
-                overview_items.push(OverviewItem {
-                    name: "iOS Backups".to_string(),
-                    path: backup,
-                    is_insight: true,
-                    is_downloads: false,
-                    exclude_path: None,
-                });
-            }
-            
-            // 4. Old Downloads (90d+)
-            let downloads = home_path.join("Downloads");
-            if downloads.exists() {
-                overview_items.push(OverviewItem {
-                    name: "Old Downloads (90d+)".to_string(),
-                    path: downloads,
-                    is_insight: true,
-                    is_downloads: true,
-                    exclude_path: None,
-                });
-            }
-            
-            // 5. 隐藏的开发者及缓存项
-            let cleanable_insights = vec![
-                ("System Logs", user_library.join("Logs")),
-                ("Homebrew Cache", user_library.join("Caches/Homebrew")),
-                ("Xcode DerivedData", user_library.join("Developer/Xcode/DerivedData")),
-                ("Xcode Simulators", user_library.join("Developer/CoreSimulator/Devices")),
-                ("Xcode Archives", user_library.join("Developer/Xcode/Archives")),
-                ("Spotify Cache", user_library.join("Application Support/Spotify/PersistentCache")),
-                ("JetBrains Cache", user_library.join("Caches/JetBrains")),
-                ("Docker Data", user_library.join("Containers/com.docker.docker/Data")),
-                ("pip Cache", user_library.join("Caches/pip")),
-                ("Gradle Cache", home_path.join(".gradle/caches")),
-                ("CocoaPods Cache", user_library.join("Caches/CocoaPods")),
-            ];
-            
-            for (name, path) in cleanable_insights {
-                if path.exists() {
-                    overview_items.push(OverviewItem {
-                        name: name.to_string(),
-                        path,
-                        is_insight: true,
-                        is_downloads: false,
-                        exclude_path: None,
-                    });
-                }
-            }
-        }
-        
-        // 6. Applications & System Library
-        let apps_path = PathBuf::from("/Applications");
-        if apps_path.exists() {
-            overview_items.push(OverviewItem {
-                name: "Applications".to_string(),
-                path: apps_path,
-                is_insight: false,
-                is_downloads: false,
-                exclude_path: None,
-            });
-        }
-        let sys_lib_path = PathBuf::from("/Library");
-        if sys_lib_path.exists() {
-            overview_items.push(OverviewItem {
-                name: "System Library".to_string(),
-                path: sys_lib_path,
-                is_insight: false,
-                is_downloads: false,
-                exclude_path: None,
-            });
         }
 
         let total_size = Arc::new(AtomicU64::new(0));
@@ -2801,3 +2835,32 @@ fn format_size(bytes: u64) -> String {
         format!("{} B", bytes)
     }
 }
+
+/// 辅助函数：将路径中的 `~`（Home 目录占位符）动态展开为系统的 HOME 环境变量绝对路径
+fn expand_home_path(path: &str, home: &str) -> PathBuf {
+    if path.starts_with("~/") {
+        PathBuf::from(path.replace("~/", &format!("{}/", home)))
+    } else if path == "~" {
+        PathBuf::from(home)
+    } else {
+        PathBuf::from(path)
+    }
+}
+
+/// 获取当前系统 Overview 概览模式下要扫描的白名单目录配置列表。
+///
+/// 前端调用：await invoke('get_overview_dirs')
+/// 返回：Vec<settings::OverviewDir>
+#[tauri::command]
+pub fn get_overview_dirs(app: AppHandle) -> Vec<settings::OverviewDir> {
+    settings::get_overview_dirs_config(&app)
+}
+
+/// 保存系统 Overview 概览模式下要扫描的白名单目录配置列表。
+///
+/// 前端调用：await invoke('set_overview_dirs', { dirs: [...] })
+#[tauri::command]
+pub fn set_overview_dirs(app: AppHandle, dirs: Vec<settings::OverviewDir>) -> Result<(), String> {
+    settings::set_overview_dirs_config(&app, dirs)
+}
+
