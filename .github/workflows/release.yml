@@ -109,7 +109,7 @@ jobs:
             **本地开发用户可以自行签名：**
             如果你有 Apple 开发者证书，可以克隆本仓库后本地构建带签名的版本：
             ```bash
-            git clone https://github.com/tw93/Mole-GUI.git
+            git clone https://github.com/vpen66/Mole-GUI.git
             cd Mole-GUI
             pnpm install
             pnpm tauri build

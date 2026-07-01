@@ -1,8 +1,8 @@
 [package]
 name = "mole-gui"
-version = "1.0.9"
+version = "1.1.0"
 description = "Mole - macOS Cleanup Toolkit GUI"
-authors = ["tw93"]
+authors = ["Vpen"]
 edition = "2021"
 
 [lib]
